@@ -204,7 +204,15 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
     const originalText =
       (await safeText(card.locator('[data-testid="price-for-x-nights"] [data-testid*="original"]').first())) ||
       (await safeText(card.locator('[data-testid*="strikethrough"], [data-testid*="original-price"]').first()));
-    const originalPrice = parseMoney(originalText);
+    let originalPrice = parseMoney(originalText);
+
+    // Booking's rate-information block spells out "Original price US$X. Current price US$Y."
+    // which is the most reliable source for the pre-discount total when shown.
+    const rateInfo = cleanText(await safeText(card.locator('[data-testid="availability-rate-information"]').first()));
+    if (!originalPrice && rateInfo) {
+      const origMatch = rateInfo.match(/Original price[^0-9]*([0-9][0-9,]*)/i);
+      if (origMatch) originalPrice = parseMoney(origMatch[0]);
+    }
 
     let discountPercentage: number | null = null;
     if (originalPrice && totalPrice && originalPrice > totalPrice) {
