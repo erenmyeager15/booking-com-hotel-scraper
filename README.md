@@ -1,6 +1,6 @@
 # Booking.com Hotel Scraper - Prices, Reviews & Availability
 
-Scrape Booking.com hotel and accommodation search results for travel research, price monitoring, lead generation, and competitor analysis. The actor searches one or more destinations for a date range, extracts clean property records, deduplicates by Booking.com property ID, and saves the results to an Apify Dataset.
+Scrape Booking.com hotel and accommodation search results for travel research, price monitoring, lead generation, and competitor analysis. The actor searches one or more destinations for a date range, extracts clean property records, deduplicates by Booking.com property ID, and saves the results to an Apify Dataset. Export to JSON, CSV, Excel, or HTML, or pull via the Apify API — no login and no API key required.
 
 Each clean hotel record is charged with the `hotel-scraped` pay-per-event event after it is saved. The actor skips incomplete cards that do not expose a property name and Booking.com hotel URL, so the dataset avoids empty placeholder rows.
 
@@ -50,6 +50,14 @@ Each clean hotel record is charged with the `hotel-scraped` pay-per-event event 
 3. Hospitality competitor research
 4. Market research by review score, price, and destination
 5. Accommodation lead generation for travel businesses
+
+## How to Scrape Booking.com Hotels (Step by Step)
+
+1. Click **Try for free** / **Run**.
+2. Enter one or more `destinations` (e.g. `Paris, France`) and your `checkIn` / `checkOut` dates.
+3. Set `adults`, `rooms`, `currency`, and `maxResults` (start small to test).
+4. Optionally filter by `propertyTypes` and `minReviewScore`, then click **Run**.
+5. When the run finishes, export results to JSON, CSV, Excel, or HTML, or pull them via the Apify API.
 
 ## Sample Output
 
