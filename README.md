@@ -122,5 +122,6 @@ Each clean hotel record is charged with the `hotel-scraped` pay-per-event event 
 ## Notes
 
 - Booking.com can vary card fields by market, destination, availability, and experiment. Unavailable fields are returned as `null`.
+- The default Apify table view focuses on populated search-result fields and hides optional columns that are often unavailable on Booking.com cards. Raw JSON still includes those fields.
 - This actor collects search result card data, not every detail available on individual hotel detail pages.
 - Data is for research and business intelligence, not booking, legal, or financial advice.

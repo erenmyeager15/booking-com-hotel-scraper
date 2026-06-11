@@ -17,26 +17,15 @@
             "fields": [
               "destination",
               "hotelName",
-              "propertyType",
-              "starRating",
               "guestReviewScore",
               "reviewCount",
               "totalPrice",
               "pricePerNight",
-              "originalPrice",
-              "discountPercentage",
               "currency",
-              "breakfastIncluded",
-              "freeCancellation",
-              "roomsAvailable",
               "city",
               "country",
               "distanceFromCityCenter",
-              "address",
               "propertyUrl",
-              "thumbnailImageUrl",
-              "sustainabilityBadge",
-              "geniusDiscount",
               "propertyId",
               "scrapedAt"
             ]
@@ -46,17 +35,16 @@
             "properties": {
               "destination": { "label": "Destination", "format": "text" },
               "hotelName": { "label": "Hotel", "format": "text" },
-              "propertyType": { "label": "Type", "format": "text" },
-              "starRating": { "label": "Stars", "format": "number" },
               "guestReviewScore": { "label": "Guest Score", "format": "number" },
               "reviewCount": { "label": "Reviews", "format": "number" },
               "totalPrice": { "label": "Total Price", "format": "number" },
               "pricePerNight": { "label": "Per Night", "format": "number" },
               "currency": { "label": "Currency", "format": "text" },
-              "freeCancellation": { "label": "Free Cancellation", "format": "boolean" },
               "city": { "label": "City", "format": "text" },
               "country": { "label": "Country", "format": "text" },
+              "distanceFromCityCenter": { "label": "Distance From City Center", "format": "text" },
               "propertyUrl": { "label": "URL", "format": "link" },
+              "propertyId": { "label": "Property ID", "format": "text" },
               "scrapedAt": { "label": "Scraped At", "format": "date" }
             }
           }
