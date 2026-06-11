@@ -4,16 +4,6 @@ import type { Page, Locator } from 'playwright';
 import type { HotelRecord, SearchState } from './types.js';
 import { PROPERTY_TYPE_HT_IDS } from './types.js';
 
-const PROPERTY_TYPE_LABEL_MAP: Record<string, string> = {
-  hotel: 'Hotel',
-  apartment: 'Apartment',
-  hostel: 'Hostel',
-  villa: 'Villa',
-  resort: 'Resort',
-  'bed and breakfast': 'B&B',
-  'guest house': 'Guest house',
-};
-
 export const router = createPlaywrightRouter();
 
 router.addDefaultHandler(async ({ page, request, crawler, log }) => {
@@ -194,6 +184,8 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
     const hotelName = cleanText(await safeText(card.locator('[data-testid="title"]').first()));
     if (!hotelName || !propertyUrl) return null;
 
+    const cardText = cleanText(await safeText(card)) ?? '';
+
     const totalText =
       (await safeText(card.locator('[data-testid="price-and-discounted-price"]').first())) ||
       (await safeText(card.locator('[data-testid="price-for-x-nights"]').first()));
@@ -219,28 +211,19 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
       discountPercentage = Math.round((1 - totalPrice / originalPrice) * 100);
     }
 
-    const reviewScoreText = await safeText(card.locator('[data-testid="review-score"]').first());
+    const scoreEl = card.locator('[data-testid="review-score"]').first();
+    const reviewScoreText =
+      (await safeAttr(scoreEl, 'aria-label')) ||
+      (await safeText(scoreEl)) ||
+      (await safeText(card.locator('[data-testid="review-score-link"]').first()));
     const guestReviewScore = parseReviewScore(reviewScoreText);
 
-    const cardText = cleanText(await safeText(card));
     const reviewCount = parseReviewCount(cardText);
 
-    const starsEl = card.locator(
-      '[data-testid="rating-stars"], [data-testid*="star-rating"], div[aria-label*="star"]'
-    ).first();
-    const starsLabel =
-      (await safeAttr(starsEl, 'aria-label')) ||
-      (await safeText(starsEl));
-    const starRating = parseStarRating(starsLabel);
+    const starRating = await extractStarRating(card);
 
     const distanceRaw = await safeText(card.locator('[data-testid="distance"]'));
     const distanceFromCityCenter = cleanText(distanceRaw);
-
-    const propertyTypeRaw = await safeText(card.locator('[data-testid="property-type"]'));
-    const propertyType = mapPropertyType(propertyTypeRaw);
-
-    const addressRaw = await safeText(card.locator('[data-testid="address"]'));
-    const address = cleanText(addressRaw);
 
     const thumbSrc = await safeAttr(
       card.locator('img[data-testid="image"], img[data-testid*="thumbnail"]'),
@@ -248,48 +231,11 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
     ) || await safeAttr(card.locator('img').first(), 'src');
     const thumbnailImageUrl = thumbSrc || null;
 
-    const breakfastVisible = await card.locator(
-      '[data-testid="breakfast"], [data-testid*="breakfast"]'
-    ).first().isVisible().catch(() => false);
+    // Card-level benefit signals are reliably exposed as text on the search card.
+    const freeCancellation = /free cancellation/i.test(cardText);
 
-    const cancelText = await safeText(
-      card.locator('[data-testid="free-cancellation"], [data-testid*="cancellation"]').first()
-    );
-    const freeCancellation = cancelText !== null && (
-      cancelText.toLowerCase().includes('free') ||
-      cancelText.toLowerCase().includes('cancellation')
-    );
-
-    const sustainabilityBadge = await card.locator(
-      '[data-testid="sustainable-badge"], [data-testid*="sustainable"]'
-    ).first().isVisible().catch(() => false);
-
-    const geniusDiscount = await card.locator(
-      '[data-testid="genius-discount"], [data-testid*="genius"]'
-    ).first().isVisible().catch(() => false);
-
-    const amenities: string[] = [];
-    const amenityEls = card.locator('[data-testid="facility"], [data-testid*="amenity"]');
-    const amenityCount = await amenityEls.count().catch(() => 0);
-    for (let a = 0; a < amenityCount; a++) {
-      const t = await safeText(amenityEls.nth(a));
-      const cleaned = cleanText(t);
-      if (cleaned) amenities.push(cleaned);
-    }
-
-    let roomsAvailable: number | null = null;
-    const roomsRaw = await safeText(card.locator('[data-testid="availability-row"]'));
-    if (roomsRaw) {
-      const m = roomsRaw.match(/(\d+)\s*room/i);
-      if (m) roomsAvailable = parseInt(m[1], 10);
-    }
-
-    const lat = parseFloatOrNull(await safeAttr(card, 'data-latitude'));
-    const lng =
-      parseFloatOrNull(await safeAttr(card, 'data-longitude')) ??
-      parseFloatOrNull(await safeAttr(card, 'data-lng'));
-
-    const reviewCategories = await extractReviewCategories(card);
+    const sustainabilityBadge = /travel sustainable|sustainability/i.test(cardText);
+    const geniusDiscount = /genius/i.test(cardText);
 
     const [cityStr, ...countryParts] = state.destination.split(',').map((s) => s.trim());
     const city = cityStr || null;
@@ -298,12 +244,9 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
     return {
       propertyId: propertyId || extractIdFromHref(propertyUrl) || propertyUrl,
       hotelName,
-      propertyType,
       starRating,
       guestReviewScore,
       reviewCount,
-      reviewCategories,
-      address,
       city,
       country,
       distanceFromCityCenter,
@@ -312,14 +255,9 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
       originalPrice,
       discountPercentage,
       currency: state.currency,
-      breakfastIncluded: breakfastVisible,
       freeCancellation,
-      roomsAvailable,
-      amenities,
       propertyUrl,
       thumbnailImageUrl,
-      latitude: lat,
-      longitude: lng,
       sustainabilityBadge,
       geniusDiscount,
       destination: state.destination,
@@ -344,52 +282,12 @@ async function chargeHotelEvent(log: { warning(message: string): void }): Promis
   }
 }
 
-async function extractReviewCategories(card: Locator): Promise<{
-  location: number | null;
-  cleanliness: number | null;
-  comfort: number | null;
-  facilities: number | null;
-}> {
-  const defaults: { location: number | null; cleanliness: number | null; comfort: number | null; facilities: number | null } = { location: null, cleanliness: null, comfort: null, facilities: null };
-  try {
-    const categoryMap: Record<string, keyof typeof defaults> = {
-      location: 'location',
-      cleanliness: 'cleanliness',
-      comfort: 'comfort',
-      facilities: 'facilities',
-    };
-    const result = { ...defaults };
-
-    for (const [label, key] of Object.entries(categoryMap)) {
-      const el = card.locator(
-        `[data-testid="review-category-${label}"], ` +
-        `div:has-text("${label}") >> nth=0`
-      ).first();
-      const text = await safeText(el);
-      if (text) {
-        const match = text.match(/(\d+\.?\d*)/);
-        if (match) {
-          const val = parseFloat(match[1]);
-          if (!isNaN(val) && val >= 0 && val <= 10) {
-            result[key] = val;
-          }
-        }
-      }
-    }
-
-    return result;
-  } catch {
-    return defaults;
-  }
-}
-
-function mapPropertyType(raw: string | null): string | null {
-  if (!raw) return null;
-  const lower = raw.trim().toLowerCase();
-  for (const [key, label] of Object.entries(PROPERTY_TYPE_LABEL_MAP)) {
-    if (lower.includes(key)) return label;
-  }
-  return raw.trim();
+async function extractStarRating(card: Locator): Promise<number | null> {
+  // Booking exposes the official property class as an aria-label like "5 out of 5"
+  // on a span inside the card (review scores use "out of 10", so this is unambiguous).
+  const labelEl = card.locator('[aria-label*="out of 5"]').first();
+  const label = await safeAttr(labelEl, 'aria-label');
+  return parseStarRating(label);
 }
 
 function extractIdFromHref(href: string | null): string | null {
@@ -460,12 +358,6 @@ function normalizeBookingUrl(href: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-function parseFloatOrNull(val: string | null): number | null {
-  if (val === null) return null;
-  const n = parseFloat(val);
-  return isNaN(n) ? null : n;
 }
 
 function cleanText(value: string | null): string | null {

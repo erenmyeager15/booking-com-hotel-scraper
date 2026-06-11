@@ -1,0 +1,15 @@
+{
+  "destinations": ["Paris, France"],
+  "checkIn": "2026-07-01",
+  "checkOut": "2026-07-03",
+  "adults": 2,
+  "rooms": 1,
+  "propertyTypes": [],
+  "minReviewScore": 0,
+  "maxResults": 5,
+  "currency": "USD",
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  }
+}
