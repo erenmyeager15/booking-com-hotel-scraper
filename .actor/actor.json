@@ -1,0 +1,89 @@
+{
+  "actorSpecification": 1,
+  "name": "booking-com-hotel-scraper",
+  "title": "Booking.com Hotel Scraper - Prices, Reviews & Availability",
+  "description": "Scrape Booking.com hotel and accommodation leads with prices, reviews, ratings, cancellation signals, amenities, and property URLs.",
+  "version": "1.0",
+  "categories": ["TRAVEL", "LEAD_GENERATION", "PRICE_COMPARISON"],
+  "dockerfile": "Dockerfile",
+  "input": "../INPUT_SCHEMA.json",
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "views": {
+        "hotels": {
+          "title": "Hotel Records",
+          "transformation": {
+            "fields": [
+              "destination",
+              "hotelName",
+              "propertyType",
+              "starRating",
+              "guestReviewScore",
+              "reviewCount",
+              "totalPrice",
+              "pricePerNight",
+              "originalPrice",
+              "discountPercentage",
+              "currency",
+              "breakfastIncluded",
+              "freeCancellation",
+              "roomsAvailable",
+              "city",
+              "country",
+              "distanceFromCityCenter",
+              "address",
+              "propertyUrl",
+              "thumbnailImageUrl",
+              "sustainabilityBadge",
+              "geniusDiscount",
+              "propertyId",
+              "scrapedAt"
+            ]
+          },
+          "display": {
+            "component": "table",
+            "properties": {
+              "destination": { "label": "Destination", "format": "text" },
+              "hotelName": { "label": "Hotel", "format": "text" },
+              "propertyType": { "label": "Type", "format": "text" },
+              "starRating": { "label": "Stars", "format": "number" },
+              "guestReviewScore": { "label": "Guest Score", "format": "number" },
+              "reviewCount": { "label": "Reviews", "format": "number" },
+              "totalPrice": { "label": "Total Price", "format": "number" },
+              "pricePerNight": { "label": "Per Night", "format": "number" },
+              "currency": { "label": "Currency", "format": "text" },
+              "freeCancellation": { "label": "Free Cancellation", "format": "boolean" },
+              "city": { "label": "City", "format": "text" },
+              "country": { "label": "Country", "format": "text" },
+              "propertyUrl": { "label": "URL", "format": "link" },
+              "scrapedAt": { "label": "Scraped At", "format": "date" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "pricingInfo": {
+    "pricingModel": "PAY_PER_EVENT",
+    "pricingPerEvent": {
+      "actorChargeEvents": {
+        "hotel-scraped": {
+          "eventTitle": "Hotel scraped",
+          "eventDescription": "Charged once for each clean Booking.com hotel record saved to the dataset.",
+          "eventPriceUsd": 0.003,
+          "isPrimaryEvent": true,
+          "isOneTimeEvent": false
+        }
+      }
+    }
+  },
+  "defaultRunOptions": {
+    "build": "latest",
+    "memoryMbytes": 4096,
+    "timeoutSecs": 43200
+  },
+  "minMemoryMbytes": 2048,
+  "maxMemoryMbytes": 8192,
+  "webScraper": false
+}

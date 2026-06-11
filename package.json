@@ -1,0 +1,24 @@
+{
+  "name": "booking-com-hotel-scraper",
+  "version": "1.0.0",
+  "description": "Scrapes Booking.com hotel and accommodation data including prices, reviews, availability signals, and property URLs.",
+  "main": "dist/main.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "apify": "^3.2.6",
+    "crawlee": "^3.11.5",
+    "playwright": "^1.44.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "~5.5.0"
+  }
+}

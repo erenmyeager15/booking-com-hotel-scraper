@@ -1,0 +1,95 @@
+{
+  "title": "Booking.com Hotel Scraper Input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "destinations": {
+      "title": "Destinations",
+      "type": "array",
+      "description": "List of destinations to search, e.g. Paris, France or London, United Kingdom.",
+      "default": ["Paris, France"],
+      "editor": "stringList",
+      "minItems": 1,
+      "maxItems": 50
+    },
+    "checkIn": {
+      "title": "Check-in Date",
+      "type": "string",
+      "description": "Check-in date in YYYY-MM-DD format.",
+      "default": "2026-07-01",
+      "editor": "datepicker"
+    },
+    "checkOut": {
+      "title": "Check-out Date",
+      "type": "string",
+      "description": "Check-out date in YYYY-MM-DD format.",
+      "default": "2026-07-03",
+      "editor": "datepicker"
+    },
+    "adults": {
+      "title": "Number of Adults",
+      "type": "integer",
+      "description": "Number of adults per room.",
+      "default": 2,
+      "minimum": 1,
+      "maximum": 30,
+      "editor": "number"
+    },
+    "rooms": {
+      "title": "Number of Rooms",
+      "type": "integer",
+      "description": "Number of rooms to search for.",
+      "default": 1,
+      "minimum": 1,
+      "maximum": 30,
+      "editor": "number"
+    },
+    "propertyTypes": {
+      "title": "Property Type Filters",
+      "type": "array",
+      "description": "Optional property type filters. Allowed values: Hotels, Apartments, Hostels, Villas, Resorts, B&Bs, Guest houses. Leave empty for all accommodation types.",
+      "editor": "stringList",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "minReviewScore": {
+      "title": "Minimum Review Score",
+      "type": "number",
+      "description": "Only include properties with a guest review score at or above this threshold.",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 10,
+      "editor": "number"
+    },
+    "maxResults": {
+      "title": "Maximum Results",
+      "type": "integer",
+      "description": "Maximum number of properties to scrape per destination, up to 500.",
+      "default": 50,
+      "minimum": 1,
+      "maximum": 500,
+      "editor": "number"
+    },
+    "currency": {
+      "title": "Currency",
+      "type": "string",
+      "description": "Display currency for prices.",
+      "default": "USD",
+      "editor": "select",
+      "enum": ["USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "INR", "BRL", "MXN", "SEK", "NOK", "DKK", "NZD", "KRW", "SGD", "MYR", "THB", "TRY"]
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Proxy settings for scraping. Residential proxy is recommended on Apify.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      }
+    }
+  },
+  "required": ["destinations", "checkIn", "checkOut"]
+}
