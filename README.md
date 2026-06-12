@@ -1,6 +1,6 @@
 # Booking.com Hotel Scraper - Prices, Reviews & Availability
 
-Scrape Booking.com hotel and accommodation search results for travel research, price monitoring, lead generation, and competitor analysis. The actor searches one or more destinations for a date range, extracts clean property records, deduplicates by Booking.com property ID, and saves the results to an Apify Dataset. Export to JSON, CSV, Excel, or HTML, or pull via the Apify API — no login and no API key required.
+Scrape Booking.com hotel and accommodation search results for travel market research, price monitoring, and competitor analysis. The actor searches one or more destinations for a date range, extracts clean property records, deduplicates by Booking.com property ID, and saves the results to an Apify Dataset. Export to JSON, CSV, Excel, or HTML, or pull via the Apify API — no login and no API key required.
 
 Each clean hotel record is charged with the `hotel-scraped` pay-per-event event after it is saved. The actor skips incomplete cards that do not expose a property name and Booking.com hotel URL, so the dataset avoids empty placeholder rows.
 
@@ -49,7 +49,7 @@ Each clean hotel record is charged with the `hotel-scraped` pay-per-event event 
 2. Travel app and comparison-site data enrichment
 3. Hospitality competitor research
 4. Market research by review score, price, and destination
-5. Accommodation lead generation for travel businesses
+5. Accommodation data collection for travel market research
 
 ## How to Scrape Booking.com Hotels (Step by Step)
 
@@ -133,3 +133,9 @@ Each clean hotel record is charged with the `hotel-scraped` pay-per-event event 
 - The default Apify table view focuses on populated search-result fields and hides optional columns that are often unavailable on Booking.com cards. Raw JSON still includes those fields.
 - This actor collects search result card data, not every detail available on individual hotel detail pages.
 - Data is for research and business intelligence, not booking, legal, or financial advice.
+
+## Responsible Use
+
+This Actor is intended for lawful collection of publicly available information only. Users are responsible for ensuring their use complies with the source website's terms, robots.txt, applicable privacy laws, including India's DPDP Act, and all local regulations.
+
+Do not use this Actor to collect, store, sell, or misuse personal data without a lawful basis. The Actor author is not responsible for misuse by end users.
