@@ -2,7 +2,7 @@
   "actorSpecification": 1,
   "name": "booking-com-hotel-scraper",
   "title": "Booking.com Hotel Scraper - Prices, Reviews & Availability",
-  "description": "Scrape Booking.com hotel and accommodation data with prices, reviews, ratings, cancellation signals, amenities, and property URLs.",
+  "description": "Collect public Booking.com hotel and accommodation listing data including prices, ratings, review counts, cancellation options, amenities, and property URLs.",
   "version": "1.0",
   "categories": ["TRAVEL", "PRICE_COMPARISON"],
   "dockerfile": "Dockerfile",
