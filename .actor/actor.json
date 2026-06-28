@@ -69,6 +69,13 @@
           "isPrimaryEvent": false,
           "isOneTimeEvent": true
         },
+        "booking-search-started": {
+          "eventTitle": "Destination search started",
+          "eventDescription": "Charged once for each Booking.com destination search that starts, covering browser, navigation, and proxy overhead even when no hotels match the filters.",
+          "eventPriceUsd": 0.05,
+          "isPrimaryEvent": false,
+          "isOneTimeEvent": false
+        },
         "hotel-scraped": {
           "eventTitle": "Hotel scraped",
           "eventDescription": "Charged once for each clean Booking.com hotel record saved to the dataset.",
@@ -85,6 +92,6 @@
     "timeoutSecs": 1200
   },
   "minMemoryMbytes": 2048,
-  "maxMemoryMbytes": 8192,
+  "maxMemoryMbytes": 2048,
   "webScraper": false
 }

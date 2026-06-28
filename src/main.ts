@@ -4,6 +4,9 @@ import type { ProxyConfiguration } from 'apify';
 import type { SearchState, ActorInput } from './types.js';
 import { router, buildSearchUrl, getScrapeState } from './routes.js';
 
+const SEARCH_STARTED_EVENT = 'booking-search-started';
+const PAGE_SIZE = 25;
+
 await Actor.init();
 
 const input = await Actor.getInput<ActorInput>() ?? {} as ActorInput;
@@ -40,6 +43,45 @@ if (input.adults !== undefined && input.adults < 1) {
 }
 if (input.rooms !== undefined && input.rooms < 1) {
   await Actor.fail('rooms must be at least 1.');
+}
+
+const initialRequests: Array<{ url: string; userData: { state: SearchState }; label: string }> = [];
+let searchChargeLimitReached = false;
+
+for (const destination of input.destinations) {
+  const charged = await chargeDestinationSearch();
+  if (!charged) {
+    searchChargeLimitReached = true;
+    break;
+  }
+
+  const state: SearchState = {
+    destination,
+    checkIn: input.checkIn,
+    checkOut: input.checkOut,
+    adults: input.adults ?? 2,
+    rooms: input.rooms ?? 1,
+    propertyTypes: input.propertyTypes ?? [],
+    minReviewScore: input.minReviewScore ?? 0,
+    maxResults: input.maxResults ?? 5,
+    currency: input.currency ?? 'USD',
+    collectedCount: 0,
+    seenIds: [],
+    offset: 0,
+    pageSize: PAGE_SIZE,
+    hasMore: true,
+  };
+
+  const url = buildSearchUrl(state);
+  initialRequests.push({ url, userData: { state }, label: 'search' });
+}
+
+if (initialRequests.length === 0) {
+  await Actor.fail('Maximum cost per run was reached before starting any Booking.com destination search.');
+}
+
+if (searchChargeLimitReached) {
+  console.warn(`Maximum cost per run reached after ${initialRequests.length} charged destination search(es); only those searches will run.`);
 }
 
 let proxyConfiguration: ProxyConfiguration | undefined;
@@ -112,32 +154,6 @@ const crawler = new PlaywrightCrawler({
   ],
 });
 
-const PAGE_SIZE = 25;
-
-const initialRequests: Array<{ url: string; userData: { state: SearchState }; label: string }> = [];
-
-for (const destination of input.destinations) {
-  const state: SearchState = {
-    destination,
-    checkIn: input.checkIn,
-    checkOut: input.checkOut,
-    adults: input.adults ?? 2,
-    rooms: input.rooms ?? 1,
-    propertyTypes: input.propertyTypes ?? [],
-    minReviewScore: input.minReviewScore ?? 0,
-    maxResults: input.maxResults ?? 5,
-    currency: input.currency ?? 'USD',
-    collectedCount: 0,
-    seenIds: [],
-    offset: 0,
-    pageSize: PAGE_SIZE,
-    hasMore: true,
-  };
-
-  const url = buildSearchUrl(state);
-  initialRequests.push({ url, userData: { state }, label: 'search' });
-}
-
 try {
   await crawler.run(initialRequests);
 } catch (err) {
@@ -156,3 +172,11 @@ if (scrapeState.spendingLimitReached) {
 }
 
 await Actor.exit();
+
+async function chargeDestinationSearch(): Promise<boolean> {
+  const pricingInfo = Actor.getChargingManager().getPricingInfo();
+  if (!pricingInfo.isPayPerEvent) return true;
+
+  const chargeResult = await Actor.charge({ eventName: SEARCH_STARTED_EVENT });
+  return chargeResult.chargedCount >= 1;
+}
