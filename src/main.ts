@@ -176,6 +176,7 @@ await Actor.exit();
 async function chargeDestinationSearch(): Promise<boolean> {
   const pricingInfo = Actor.getChargingManager().getPricingInfo();
   if (!pricingInfo.isPayPerEvent) return true;
+  if (pricingInfo.perEventPrices[SEARCH_STARTED_EVENT] === undefined) return true;
 
   const chargeResult = await Actor.charge({ eventName: SEARCH_STARTED_EVENT });
   return chargeResult.chargedCount >= 1;

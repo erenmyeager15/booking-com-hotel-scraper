@@ -4,7 +4,7 @@ Scrape Booking.com hotel and accommodation search results for travel market rese
 
 For the first run, start small: one destination, a one-night future date range, `maxResults` between 5 and 10, and the recommended residential proxy enabled.
 
-Each destination search is charged through the `booking-search-started` pay-per-event flow before browser and proxy work begins, and each clean hotel record is saved through the `hotel-scraped` event. Output is only kept when the result event charge is accepted. The actor skips incomplete cards that do not expose a property name and Booking.com hotel URL, so the dataset avoids empty placeholder rows.
+Each clean hotel record is saved through the `hotel-scraped` pay-per-event flow, so output is only kept when the result event charge is accepted. The actor skips incomplete cards that do not expose a property name and Booking.com hotel URL, so the dataset avoids empty placeholder rows.
 
 ## Features
 
@@ -59,10 +59,9 @@ This Actor uses Apify Pay Per Event + platform usage pricing. You pay for clean 
 
 | Event | Price |
 | --- | --- |
-| `booking-search-started` | $0.05 per destination search started |
 | `hotel-scraped` | $0.008 per clean hotel record |
-| 1,000 hotels | $8.00 + destination search events + platform usage |
-| 10,000 hotels | $80.00 + destination search events + platform usage |
+| 1,000 hotels | $8.00 + platform usage |
+| 10,000 hotels | $80.00 + platform usage |
 
 Cost-control tips:
 
@@ -158,7 +157,7 @@ The default **Hotel Records** dataset view is designed for quick export to CSV, 
 - Proxy: Apify residential proxy recommended for cloud runs
 - Retry policy: 3 retries with blocked-request retry handling
 - Storage: Apify Dataset
-- Charge model: `Actor.charge({ eventName: "booking-search-started" })` per destination, then `Actor.pushData(record, "hotel-scraped")` per saved hotel
+- Charge model: `Actor.pushData(record, "hotel-scraped")` per saved hotel
 
 ## Notes
 
