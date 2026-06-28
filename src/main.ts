@@ -2,7 +2,7 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler } from 'crawlee';
 import type { ProxyConfiguration } from 'apify';
 import type { SearchState, ActorInput } from './types.js';
-import { router, buildSearchUrl } from './routes.js';
+import { router, buildSearchUrl, getScrapeState } from './routes.js';
 
 await Actor.init();
 
@@ -52,6 +52,8 @@ try {
   proxyConfiguration = undefined;
 }
 
+let failedRequestCount = 0;
+
 const crawler = new PlaywrightCrawler({
   proxyConfiguration,
   useSessionPool: true,
@@ -64,10 +66,16 @@ const crawler = new PlaywrightCrawler({
   },
   requestHandler: router,
   maxRequestRetries: 3,
+  maxSessionRotations: 3,
   retryOnBlocked: true,
   navigationTimeoutSecs: 60,
   requestHandlerTimeoutSecs: 120,
   maxRequestsPerCrawl: 2000,
+  failedRequestHandler: async ({ request, log }, error) => {
+    failedRequestCount++;
+    const message = error instanceof Error ? error.message : String(error);
+    log.error(`Booking.com request failed after retries: ${request.url}`, { error: message });
+  },
   launchContext: {
     launchOptions: {
       headless: true,
@@ -117,7 +125,7 @@ for (const destination of input.destinations) {
     rooms: input.rooms ?? 1,
     propertyTypes: input.propertyTypes ?? [],
     minReviewScore: input.minReviewScore ?? 0,
-    maxResults: input.maxResults ?? 50,
+    maxResults: input.maxResults ?? 5,
     currency: input.currency ?? 'USD',
     collectedCount: 0,
     seenIds: [],
@@ -136,6 +144,15 @@ try {
   const message = err instanceof Error ? err.message : String(err);
   console.error(`Crawler failed: ${message}`);
   throw err;
+}
+
+const scrapeState = getScrapeState();
+if (scrapeState.chargedHotelCount === 0) {
+  throw new Error(`No Booking.com hotel records were charged and saved. Failed requests: ${failedRequestCount}.`);
+}
+
+if (scrapeState.spendingLimitReached) {
+  console.warn(`Booking.com crawl stopped at the user's spending limit after ${scrapeState.chargedHotelCount} charged hotel records.`);
 }
 
 await Actor.exit();

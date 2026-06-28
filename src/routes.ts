@@ -1,13 +1,30 @@
-import { createPlaywrightRouter, Dataset } from 'crawlee';
+import { createPlaywrightRouter } from 'crawlee';
 import { Actor } from 'apify';
 import type { Page, Locator } from 'playwright';
 import type { HotelRecord, SearchState } from './types.js';
 import { PROPERTY_TYPE_HT_IDS } from './types.js';
 
 export const router = createPlaywrightRouter();
+const HOTEL_SCRAPED_EVENT = 'hotel-scraped';
+
+let chargedHotelCount = 0;
+let spendingLimitReached = false;
+
+export function getScrapeState() {
+  return {
+    chargedHotelCount,
+    spendingLimitReached,
+  };
+}
 
 router.addDefaultHandler(async ({ page, request, crawler, log }) => {
   const state = request.userData.state as SearchState;
+
+  if (spendingLimitReached) {
+    request.noRetry = true;
+    log.info('Charge limit already reached; skipping remaining Booking.com requests.');
+    return;
+  }
 
   if (!state.hasMore) {
     log.info(`No more pages for "${state.destination}" - hasMore=false`);
@@ -60,11 +77,26 @@ router.addDefaultHandler(async ({ page, request, crawler, log }) => {
         (record.guestReviewScore !== null && record.guestReviewScore >= state.minReviewScore))
     ) {
       state.seenIds.push(record.propertyId);
-      await Dataset.pushData(record);
-      await chargeHotelEvent(log);
+      const chargeResult = await Actor.pushData(record, HOTEL_SCRAPED_EVENT);
+      if (chargeResult.chargedCount < 1) {
+        spendingLimitReached = true;
+        state.hasMore = false;
+        log.warning('Stopping crawl because hotel-scraped charge was not accepted before saving another record.');
+        await crawler.autoscaledPool?.abort();
+        return;
+      }
+      chargedHotelCount++;
       state.collectedCount++;
       newOnPage++;
       log.info(`[${state.collectedCount}/${state.maxResults}] ${record.hotelName}`);
+
+      if (chargeResult.eventChargeLimitReached) {
+        spendingLimitReached = true;
+        state.hasMore = false;
+        log.warning('User spending limit reached; stopping after the last charged hotel record.');
+        await crawler.autoscaledPool?.abort();
+        return;
+      }
 
       if (state.collectedCount >= state.maxResults) {
         log.info(`Reached maxResults ${state.maxResults}`);
@@ -273,20 +305,6 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
     };
   } catch {
     return null;
-  }
-}
-
-async function chargeHotelEvent(log: { warning(message: string): void }): Promise<void> {
-  if (!Actor.isAtHome()) {
-    log.warning('Skipping PPE charge outside Apify platform.');
-    return;
-  }
-
-  try {
-    await Actor.charge({ eventName: 'hotel-scraped' });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    log.warning(`PPE charge failed - continuing: ${message}`);
   }
 }
 
