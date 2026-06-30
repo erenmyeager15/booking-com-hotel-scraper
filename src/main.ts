@@ -3,47 +3,14 @@ import { PlaywrightCrawler } from 'crawlee';
 import type { ProxyConfiguration } from 'apify';
 import type { SearchState, ActorInput } from './types.js';
 import { router, buildSearchUrl, getScrapeState } from './routes.js';
+import { normalizeInput } from './input.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const PAGE_SIZE = 25;
 
 await Actor.init();
 
-const input = await Actor.getInput<ActorInput>() ?? {} as ActorInput;
-
-if (!input.destinations?.length) {
-  await Actor.fail('At least one destination is required. Provide a "destinations" array.');
-}
-if (!input.checkIn) {
-  await Actor.fail('checkIn is required (YYYY-MM-DD).');
-}
-if (!input.checkOut) {
-  await Actor.fail('checkOut is required (YYYY-MM-DD).');
-}
-if (!/^\d{4}-\d{2}-\d{2}$/.test(input.checkIn)) {
-  await Actor.fail('checkIn must be in YYYY-MM-DD format.');
-}
-if (!/^\d{4}-\d{2}-\d{2}$/.test(input.checkOut)) {
-  await Actor.fail('checkOut must be in YYYY-MM-DD format.');
-}
-if (isNaN(Date.parse(input.checkIn))) {
-  await Actor.fail('checkIn is not a valid date.');
-}
-if (isNaN(Date.parse(input.checkOut))) {
-  await Actor.fail('checkOut is not a valid date.');
-}
-if (input.checkIn >= input.checkOut) {
-  await Actor.fail('checkOut must be after checkIn.');
-}
-if (input.maxResults! > 500) {
-  await Actor.fail('maxResults cannot exceed 500.');
-}
-if (input.adults !== undefined && input.adults < 1) {
-  await Actor.fail('adults must be at least 1.');
-}
-if (input.rooms !== undefined && input.rooms < 1) {
-  await Actor.fail('rooms must be at least 1.');
-}
+const input = normalizeInput((await Actor.getInput<ActorInput>()) ?? {});
 
 const initialRequests: Array<{ url: string; userData: { state: SearchState }; label: string }> = [];
 let searchChargeLimitReached = false;
@@ -59,12 +26,12 @@ for (const destination of input.destinations) {
     destination,
     checkIn: input.checkIn,
     checkOut: input.checkOut,
-    adults: input.adults ?? 2,
-    rooms: input.rooms ?? 1,
-    propertyTypes: input.propertyTypes ?? [],
-    minReviewScore: input.minReviewScore ?? 0,
-    maxResults: input.maxResults ?? 5,
-    currency: input.currency ?? 'USD',
+    adults: input.adults,
+    rooms: input.rooms,
+    propertyTypes: input.propertyTypes,
+    minReviewScore: input.minReviewScore,
+    maxResults: input.maxResults,
+    currency: input.currency,
     collectedCount: 0,
     seenIds: [],
     offset: 0,

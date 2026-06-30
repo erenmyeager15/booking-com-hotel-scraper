@@ -1,4 +1,20 @@
 export interface ActorInput {
+  destinations?: string[];
+  checkIn?: string;
+  checkOut?: string;
+  adults?: number;
+  rooms?: number;
+  propertyTypes?: string[];
+  minReviewScore?: number;
+  maxResults?: number;
+  currency?: string;
+  proxyConfiguration?: {
+    useApifyProxy: boolean;
+    apifyProxyGroups: string[];
+  };
+}
+
+export interface NormalizedInput {
   destinations: string[];
   checkIn: string;
   checkOut: string;

@@ -78,7 +78,8 @@ router.addDefaultHandler(async ({ page, request, crawler, log }) => {
     ) {
       state.seenIds.push(record.propertyId);
       const chargeResult = await Actor.pushData(record, HOTEL_SCRAPED_EVENT);
-      if (chargeResult.chargedCount < 1) {
+      const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
+      if (!recordWasSaved) {
         spendingLimitReached = true;
         state.hasMore = false;
         log.warning('Stopping crawl because hotel-scraped charge was not accepted before saving another record.');
@@ -316,13 +317,13 @@ async function extractStarRating(card: Locator): Promise<number | null> {
   return parseStarRating(label);
 }
 
-function extractIdFromHref(href: string | null): string | null {
+export function extractIdFromHref(href: string | null): string | null {
   if (!href) return null;
   const m = href.match(/\/hotel\/(?:[^/]+\/)?([^.?&/]+)/);
   return m?.[1] ?? null;
 }
 
-function parseMoney(text: string | null): number | null {
+export function parseMoney(text: string | null): number | null {
   const normalized = cleanText(text);
   if (!normalized) return null;
 
@@ -336,7 +337,7 @@ function parseMoney(text: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseReviewScore(text: string | null): number | null {
+export function parseReviewScore(text: string | null): number | null {
   const normalized = cleanText(text)?.replace(/,/g, '.');
   if (!normalized) return null;
 
@@ -347,7 +348,7 @@ function parseReviewScore(text: string | null): number | null {
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 10 ? parsed : null;
 }
 
-function parseReviewCount(text: string | null): number | null {
+export function parseReviewCount(text: string | null): number | null {
   const normalized = cleanText(text);
   if (!normalized) return null;
 
@@ -358,7 +359,7 @@ function parseReviewCount(text: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseStarRating(text: string | null): number | null {
+export function parseStarRating(text: string | null): number | null {
   const normalized = cleanText(text);
   if (!normalized) return null;
 
@@ -367,14 +368,14 @@ function parseStarRating(text: string | null): number | null {
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 5 ? parsed : null;
 }
 
-function countNights(checkIn: string, checkOut: string): number {
+export function countNights(checkIn: string, checkOut: string): number {
   const start = Date.parse(checkIn);
   const end = Date.parse(checkOut);
   if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 1;
   return Math.max(1, Math.round((end - start) / 86400000));
 }
 
-function normalizeBookingUrl(href: string | null): string | null {
+export function normalizeBookingUrl(href: string | null): string | null {
   if (!href) return null;
   try {
     const url = new URL(href, 'https://www.booking.com');

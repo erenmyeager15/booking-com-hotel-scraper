@@ -1,10 +1,12 @@
 {
   "actorSpecification": 1,
   "name": "booking-com-hotel-scraper",
-  "title": "Booking.com Hotel Scraper - Prices, Reviews & Availability",
-  "description": "Collect public Booking.com hotel and accommodation listing data including prices, ratings, review counts, cancellation options, amenities, and property URLs.",
+  "title": "Booking.com Hotel Scraper: Prices & Availability",
+  "description": "Scrape public Booking.com accommodation search results with hotel names, prices, guest scores, review counts, cancellation signals, property IDs, images, and URLs.",
   "version": "1.0",
-  "categories": ["TRAVEL", "PRICE_COMPARISON"],
+  "buildTag": "latest",
+  "categories": ["TRAVEL", "OTHER"],
+  "categoriesVersion": "1.0.0",
   "dockerfile": "Dockerfile",
   "input": "../INPUT_SCHEMA.json",
   "readme": "../README.md",
@@ -63,18 +65,11 @@
     "pricingPerEvent": {
       "actorChargeEvents": {
         "apify-actor-start": {
-          "eventTitle": "Actor start",
-          "eventDescription": "Charged when the run starts to cover browser startup and residential proxy setup. Number of events depends on memory (one per GB, minimum one).",
-          "eventPriceUsd": 0.001,
+          "eventTitle": "Actor Start",
+          "eventDescription": "Charged when the Actor starts running. Number of events charged depends on Actor memory (one event per GB, minimum one event).",
+          "eventPriceUsd": 0.00005,
           "isPrimaryEvent": false,
           "isOneTimeEvent": true
-        },
-        "booking-search-started": {
-          "eventTitle": "Destination search started",
-          "eventDescription": "Charged once for each Booking.com destination search that starts, covering browser, navigation, and proxy overhead even when no hotels match the filters.",
-          "eventPriceUsd": 0.05,
-          "isPrimaryEvent": false,
-          "isOneTimeEvent": false
         },
         "hotel-scraped": {
           "eventTitle": "Hotel scraped",
@@ -85,6 +80,10 @@
         }
       }
     }
+  },
+  "exampleRunInput": {
+    "body": "{\"destinations\":[\"London, United Kingdom\"],\"checkIn\":\"2026-08-15\",\"checkOut\":\"2026-08-16\",\"adults\":2,\"rooms\":1,\"propertyTypes\":[],\"minReviewScore\":0,\"maxResults\":1,\"currency\":\"USD\",\"proxyConfiguration\":{\"useApifyProxy\":true,\"apifyProxyGroups\":[\"RESIDENTIAL\"]}}",
+    "contentType": "application/json; charset=utf-8"
   },
   "defaultRunOptions": {
     "build": "latest",
