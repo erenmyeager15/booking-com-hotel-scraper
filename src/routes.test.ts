@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeInput } from './input.js';
+import {
+  normalizeInput,
+  normalizeProxyConfiguration,
+  toProxyConfigurationOptions,
+} from './input.js';
 import {
   buildSearchUrl,
+  classifyBookingDocument,
   countNights,
+  decidePageProgress,
   extractIdFromHref,
   normalizeBookingUrl,
   parseMoney,
@@ -39,7 +45,13 @@ test('normalizes Booking.com input and clamps limits', () => {
   });
 });
 
-test('rejects missing, stale, invalid, and reversed date inputs', () => {
+test('uses durable dynamic dates when date input is omitted', () => {
+  const input = normalizeInput({ destinations: ['London'] }, fixedToday);
+  assert.equal(input.checkIn, '2026-07-31');
+  assert.equal(input.checkOut, '2026-08-01');
+});
+
+test('rejects missing destinations, stale dates, invalid dates, and reversed ranges', () => {
   assert.throws(() => normalizeInput({ destinations: [] }, fixedToday), /destination/);
   assert.throws(() => normalizeInput({
     destinations: ['London'],
@@ -58,6 +70,61 @@ test('rejects missing, stale, invalid, and reversed date inputs', () => {
   }, fixedToday), /after checkIn/);
 });
 
+test('preserves direct, custom, and country-specific proxy intent', () => {
+  assert.deepEqual(normalizeProxyConfiguration({ useApifyProxy: false }), {
+    useApifyProxy: false,
+  });
+  assert.deepEqual(
+    normalizeProxyConfiguration({
+      useApifyProxy: false,
+      apifyProxyGroups: ['RESIDENTIAL'],
+      proxyUrls: [' http://proxy.example:8000 '],
+    }),
+    { useApifyProxy: false, proxyUrls: ['http://proxy.example:8000'] },
+  );
+  assert.deepEqual(
+    toProxyConfigurationOptions(normalizeProxyConfiguration({
+      useApifyProxy: true,
+      apifyProxyGroups: ['RESIDENTIAL'],
+      apifyProxyCountry: 'gb',
+    })),
+    { useApifyProxy: true, groups: ['RESIDENTIAL'], countryCode: 'GB' },
+  );
+  assert.throws(
+    () => normalizeProxyConfiguration({
+      useApifyProxy: true,
+      apifyProxyGroups: ['RESIDENTIAL'],
+      proxyUrls: ['http://proxy.example:8000'],
+    }),
+    /cannot combine/,
+  );
+});
+
+test('classifies Booking.com block and genuine no-result pages', () => {
+  assert.equal(classifyBookingDocument('Security check', 'Verify you are human'), 'blocked');
+  assert.equal(classifyBookingDocument('Booking.com', 'No properties found for these dates'), 'no-results');
+  assert.equal(classifyBookingDocument('Hotels in London', '125 properties found'), 'normal');
+});
+
+test('retries malformed cards, continues filtered pages, and bounds pagination', () => {
+  assert.equal(decidePageProgress({
+    cardCount: 25, extractedCount: 0, newCount: 0, duplicateCount: 0,
+    filteredCount: 0, offset: 0, pageSize: 25,
+  }), 'retry');
+  assert.equal(decidePageProgress({
+    cardCount: 25, extractedCount: 25, newCount: 0, duplicateCount: 0,
+    filteredCount: 25, offset: 0, pageSize: 25,
+  }), 'next');
+  assert.equal(decidePageProgress({
+    cardCount: 25, extractedCount: 25, newCount: 0, duplicateCount: 25,
+    filteredCount: 0, offset: 25, pageSize: 25,
+  }), 'stop');
+  assert.equal(decidePageProgress({
+    cardCount: 25, extractedCount: 25, newCount: 25, duplicateCount: 0,
+    filteredCount: 0, offset: 975, pageSize: 25,
+  }), 'stop');
+});
+
 test('builds Booking.com search URLs with property filters', () => {
   const state: SearchState = {
     destination: 'London, United Kingdom',
@@ -70,6 +137,7 @@ test('builds Booking.com search URLs with property filters', () => {
     maxResults: 1,
     currency: 'USD',
     collectedCount: 0,
+    examinedCount: 0,
     seenIds: [],
     offset: 25,
     pageSize: 25,

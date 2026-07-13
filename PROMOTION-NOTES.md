@@ -9,7 +9,7 @@
 
 ## Short Video Outline
 
-1. Run the one-result London example with future dates.
+1. Run the one-result London example with dynamic dates, or provide a future date range.
 2. Show the dataset table with hotel name, price, guest score, reviews, currency, distance, and property URL.
 3. Export to CSV or Excel.
 4. Mention cost controls: one destination, one night, one result first, Residential proxy, and maximum cost per run.

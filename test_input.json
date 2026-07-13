@@ -1,7 +1,5 @@
 {
   "destinations": ["London, United Kingdom"],
-  "checkIn": "2026-08-15",
-  "checkOut": "2026-08-16",
   "adults": 2,
   "rooms": 1,
   "propertyTypes": [],

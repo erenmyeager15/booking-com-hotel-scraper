@@ -8,10 +8,14 @@ export interface ActorInput {
   minReviewScore?: number;
   maxResults?: number;
   currency?: string;
-  proxyConfiguration?: {
-    useApifyProxy: boolean;
-    apifyProxyGroups: string[];
-  };
+  proxyConfiguration?: ProxyConfigInput;
+}
+
+export interface ProxyConfigInput {
+  useApifyProxy?: boolean;
+  apifyProxyGroups?: string[];
+  apifyProxyCountry?: string;
+  proxyUrls?: string[];
 }
 
 export interface NormalizedInput {
@@ -24,10 +28,7 @@ export interface NormalizedInput {
   minReviewScore: number;
   maxResults: number;
   currency: string;
-  proxyConfiguration: {
-    useApifyProxy: boolean;
-    apifyProxyGroups: string[];
-  };
+  proxyConfiguration: ProxyConfigInput;
 }
 
 export interface HotelRecord {
@@ -64,6 +65,7 @@ export interface SearchState {
   maxResults: number;
   currency: string;
   collectedCount: number;
+  examinedCount: number;
   seenIds: string[];
   offset: number;
   pageSize: number;

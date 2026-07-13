@@ -6,18 +6,68 @@ import { PROPERTY_TYPE_HT_IDS } from './types.js';
 
 export const router = createPlaywrightRouter();
 const HOTEL_SCRAPED_EVENT = 'hotel-scraped';
+export const MAX_PAGES_PER_DESTINATION = 40;
+
+export type BookingDocumentState = 'normal' | 'blocked' | 'no-results';
+export type PageProgressAction = 'next' | 'stop' | 'retry';
+
+export function classifyBookingDocument(
+  title: string,
+  bodyText: string,
+  hasChallengeElement = false,
+): BookingDocumentState {
+  const text = `${title} ${bodyText}`.toLowerCase();
+  if (
+    hasChallengeElement
+    || /verify (?:that )?you are human|verify you're human|are you a robot|captcha/.test(text)
+    || /access denied|unusual traffic|security check|automated requests/.test(text)
+  ) return 'blocked';
+
+  if (
+    /no properties found|0 properties found|no results found/.test(text)
+    || /we (?:couldn't|could not) find any properties|nothing matches your search/.test(text)
+    || /no availability for (?:your|these) dates/.test(text)
+  ) return 'no-results';
+
+  return 'normal';
+}
+
+export function decidePageProgress(input: {
+  cardCount: number;
+  extractedCount: number;
+  newCount: number;
+  duplicateCount: number;
+  filteredCount: number;
+  offset: number;
+  pageSize: number;
+}): PageProgressAction {
+  if (input.extractedCount === 0) return 'retry';
+
+  const currentPage = Math.floor(input.offset / input.pageSize) + 1;
+  if (currentPage >= MAX_PAGES_PER_DESTINATION) return 'stop';
+  if (input.cardCount < input.pageSize) return 'stop';
+
+  const onlyDuplicates = input.newCount === 0
+    && input.duplicateCount > 0
+    && input.filteredCount === 0;
+  if (onlyDuplicates) return 'stop';
+
+  return 'next';
+}
 
 let chargedHotelCount = 0;
 let spendingLimitReached = false;
+const noResultDestinations = new Set<string>();
 
 export function getScrapeState() {
   return {
     chargedHotelCount,
     spendingLimitReached,
+    noResultDestinationCount: noResultDestinations.size,
   };
 }
 
-router.addDefaultHandler(async ({ page, request, crawler, log }) => {
+router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   const state = request.userData.state as SearchState;
 
   if (spendingLimitReached) {
@@ -33,17 +83,37 @@ router.addDefaultHandler(async ({ page, request, crawler, log }) => {
 
   log.info(`Page offset=${state.offset} for "${state.destination}" (${state.collectedCount}/${state.maxResults})`);
 
+  if (await inspectBookingPage(page) === 'blocked') {
+    session?.retire();
+    throw new Error(`BOOKING_BLOCKED: ${state.destination} offset ${state.offset}`);
+  }
+
   await randomDelay(page, 1500, 3000);
 
   await handleCookieConsent(page);
   await handleCurrencyDropdown(page, state.currency, log);
 
+  if (await inspectBookingPage(page) === 'blocked') {
+    session?.retire();
+    throw new Error(`BOOKING_BLOCKED_AFTER_INTERACTION: ${state.destination} offset ${state.offset}`);
+  }
+
   try {
     await page.waitForSelector('[data-testid="property-card"]', { timeout: 30000 });
   } catch {
-    log.warning(`No property cards at offset ${state.offset} for "${state.destination}" - stopping`);
-    state.hasMore = false;
-    return;
+    const documentState = await inspectBookingPage(page);
+    if (documentState === 'blocked') {
+      session?.retire();
+      throw new Error(`BOOKING_BLOCKED_WHILE_WAITING: ${state.destination} offset ${state.offset}`);
+    }
+    if (documentState === 'no-results' || state.offset > 0) {
+      markNoResultIfComplete(state);
+      log.info(`No more Booking.com properties at offset ${state.offset} for "${state.destination}".`);
+      state.hasMore = false;
+      return;
+    }
+    session?.retire();
+    throw new Error(`PROPERTY_CARDS_NOT_RENDERED: ${state.destination} offset ${state.offset}`);
   }
 
   await randomDelay(page, 1000, 2000);
@@ -53,11 +123,24 @@ router.addDefaultHandler(async ({ page, request, crawler, log }) => {
   log.info(`Found ${cardCount} cards`);
 
   if (cardCount === 0) {
-    state.hasMore = false;
-    return;
+    const documentState = await inspectBookingPage(page);
+    if (documentState === 'blocked') {
+      session?.retire();
+      throw new Error(`BOOKING_BLOCKED_EMPTY_CARDS: ${state.destination} offset ${state.offset}`);
+    }
+    if (documentState === 'no-results' || state.offset > 0) {
+      markNoResultIfComplete(state);
+      state.hasMore = false;
+      return;
+    }
+    session?.retire();
+    throw new Error(`EMPTY_PROPERTY_CARD_SET: ${state.destination} offset ${state.offset}`);
   }
 
   let newOnPage = 0;
+  let extractedOnPage = 0;
+  let duplicateOnPage = 0;
+  let filteredOnPage = 0;
 
   for (let i = 0; i < cardCount; i++) {
     if (state.collectedCount >= state.maxResults) {
@@ -69,51 +152,76 @@ router.addDefaultHandler(async ({ page, request, crawler, log }) => {
     const card = cards.nth(i);
     const record = await extractProperty(card, state);
 
-    if (
-      record &&
-      record.propertyId &&
-      !state.seenIds.includes(record.propertyId) &&
-      (state.minReviewScore === 0 ||
-        (record.guestReviewScore !== null && record.guestReviewScore >= state.minReviewScore))
-    ) {
-      state.seenIds.push(record.propertyId);
-      const chargeResult = await Actor.pushData(record, HOTEL_SCRAPED_EVENT);
-      const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
-      if (!recordWasSaved) {
-        spendingLimitReached = true;
-        state.hasMore = false;
-        log.warning('Stopping crawl because hotel-scraped charge was not accepted before saving another record.');
-        await crawler.autoscaledPool?.abort();
-        return;
-      }
-      chargedHotelCount++;
-      state.collectedCount++;
-      newOnPage++;
-      log.info(`[${state.collectedCount}/${state.maxResults}] ${record.hotelName}`);
+    if (!record?.propertyId) continue;
+    extractedOnPage++;
 
-      if (chargeResult.eventChargeLimitReached) {
-        spendingLimitReached = true;
-        state.hasMore = false;
-        log.warning('User spending limit reached; stopping after the last charged hotel record.');
-        await crawler.autoscaledPool?.abort();
-        return;
-      }
+    if (state.seenIds.includes(record.propertyId)) {
+      duplicateOnPage++;
+      continue;
+    }
 
-      if (state.collectedCount >= state.maxResults) {
-        log.info(`Reached maxResults ${state.maxResults}`);
-        state.hasMore = false;
-        return;
-      }
+    const passesReviewFilter = state.minReviewScore === 0
+      || (record.guestReviewScore !== null && record.guestReviewScore >= state.minReviewScore);
+    if (!passesReviewFilter) {
+      filteredOnPage++;
+      continue;
+    }
+
+    state.seenIds.push(record.propertyId);
+    const chargeResult = await Actor.pushData(record, HOTEL_SCRAPED_EVENT);
+    const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
+    if (!recordWasSaved) {
+      spendingLimitReached = true;
+      state.hasMore = false;
+      log.warning('Stopping crawl because hotel-scraped charge was not accepted before saving another record.');
+      await crawler.autoscaledPool?.abort();
+      return;
+    }
+    chargedHotelCount++;
+    state.collectedCount++;
+    newOnPage++;
+    log.info(`[${state.collectedCount}/${state.maxResults}] ${record.hotelName}`);
+
+    if (chargeResult.eventChargeLimitReached) {
+      spendingLimitReached = true;
+      state.hasMore = false;
+      log.warning('User spending limit reached; stopping after the last charged hotel record.');
+      await crawler.autoscaledPool?.abort();
+      return;
+    }
+
+    if (state.collectedCount >= state.maxResults) {
+      log.info(`Reached maxResults ${state.maxResults}`);
+      state.hasMore = false;
+      return;
     }
   }
+
+  state.examinedCount += extractedOnPage;
 
   if (state.collectedCount >= state.maxResults) {
     state.hasMore = false;
     return;
   }
 
-  if (newOnPage === 0) {
-    log.info('No new properties on this page - likely end of results');
+  const progressAction = decidePageProgress({
+    cardCount,
+    extractedCount: extractedOnPage,
+    newCount: newOnPage,
+    duplicateCount: duplicateOnPage,
+    filteredCount: filteredOnPage,
+    offset: state.offset,
+    pageSize: state.pageSize,
+  });
+
+  if (progressAction === 'retry') {
+    session?.retire();
+    throw new Error(`NO_VALID_PROPERTY_CARDS: ${state.destination} offset ${state.offset}`);
+  }
+
+  if (progressAction === 'stop') {
+    markNoResultIfComplete(state);
+    log.info(`Stopping pagination at offset ${state.offset}: cards=${cardCount}, extracted=${extractedOnPage}, new=${newOnPage}, duplicates=${duplicateOnPage}, filtered=${filteredOnPage}.`);
     state.hasMore = false;
     return;
   }
@@ -128,6 +236,12 @@ router.addDefaultHandler(async ({ page, request, crawler, log }) => {
 
   await randomDelay(page, 1000, 2000);
 });
+
+function markNoResultIfComplete(state: SearchState): void {
+  if (state.collectedCount === 0 && (state.offset === 0 || state.examinedCount > 0)) {
+    noResultDestinations.add(state.destination);
+  }
+}
 
 export function buildSearchUrl(state: SearchState): string {
   const base = 'https://www.booking.com/searchresults.html';
@@ -152,6 +266,22 @@ export function buildSearchUrl(state: SearchState): string {
   }
 
   return `${base}?${params.toString()}`;
+}
+
+async function inspectBookingPage(page: Page): Promise<BookingDocumentState> {
+  const snapshot = await page.evaluate(() => ({
+    title: document.title || '',
+    bodyText: (document.body?.innerText || '').slice(0, 5000),
+    hasChallengeElement: Boolean(document.querySelector(
+      'iframe[src*="captcha"], [data-testid*="captcha"], #challenge-running, [class*="captcha"]',
+    )),
+  })).catch(() => ({ title: '', bodyText: '', hasChallengeElement: false }));
+
+  return classifyBookingDocument(
+    snapshot.title,
+    snapshot.bodyText,
+    snapshot.hasChallengeElement,
+  );
 }
 
 async function handleCookieConsent(page: Page): Promise<boolean> {

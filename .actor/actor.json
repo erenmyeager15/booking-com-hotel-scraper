@@ -50,7 +50,7 @@
               "city": { "label": "City", "format": "text" },
               "country": { "label": "Country", "format": "text" },
               "distanceFromCityCenter": { "label": "Distance From City Center", "format": "text" },
-              "freeCancellation": { "label": "Free Cancellation", "format": "text" },
+              "freeCancellation": { "label": "Free Cancellation", "format": "boolean" },
               "propertyUrl": { "label": "URL", "format": "link" },
               "propertyId": { "label": "Property ID", "format": "text" },
               "scrapedAt": { "label": "Scraped At", "format": "date" }
@@ -82,7 +82,7 @@
     }
   },
   "exampleRunInput": {
-    "body": "{\"destinations\":[\"London, United Kingdom\"],\"checkIn\":\"2026-08-15\",\"checkOut\":\"2026-08-16\",\"adults\":2,\"rooms\":1,\"propertyTypes\":[],\"minReviewScore\":0,\"maxResults\":1,\"currency\":\"USD\",\"proxyConfiguration\":{\"useApifyProxy\":true,\"apifyProxyGroups\":[\"RESIDENTIAL\"]}}",
+    "body": "{\"destinations\":[\"London, United Kingdom\"],\"adults\":2,\"rooms\":1,\"propertyTypes\":[],\"minReviewScore\":0,\"maxResults\":1,\"currency\":\"USD\",\"proxyConfiguration\":{\"useApifyProxy\":true,\"apifyProxyGroups\":[\"RESIDENTIAL\"]}}",
     "contentType": "application/json; charset=utf-8"
   },
   "defaultRunOptions": {

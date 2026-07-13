@@ -1,6 +1,6 @@
 {
   "title": "Booking.com Hotel Scraper Input",
-  "description": "Search public Booking.com accommodation listings. Defaults are set for a one-night, one-result London test with residential proxy enabled.",
+  "description": "Search public Booking.com accommodation listings. The default run uses London, one result, and a dynamic one-night stay 30 days after the run date.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
@@ -16,15 +16,13 @@
     "checkIn": {
       "title": "Check-in Date",
       "type": "string",
-      "description": "Future check-in date in YYYY-MM-DD format. Booking.com requires future dates.",
-      "default": "2026-08-15",
+      "description": "Optional future check-in date in YYYY-MM-DD format. Leave blank to use 30 days after the run date.",
       "editor": "datepicker"
     },
     "checkOut": {
       "title": "Check-out Date",
       "type": "string",
-      "description": "Future check-out date in YYYY-MM-DD format. Use a one-night range for low-cost tests.",
-      "default": "2026-08-16",
+      "description": "Optional future check-out date in YYYY-MM-DD format. Leave blank to use one night after check-in.",
       "editor": "datepicker"
     },
     "adults": {
@@ -92,5 +90,5 @@
       }
     }
   },
-  "required": ["destinations", "checkIn", "checkOut"]
+  "required": ["destinations"]
 }

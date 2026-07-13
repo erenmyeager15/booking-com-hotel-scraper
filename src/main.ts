@@ -3,7 +3,7 @@ import { PlaywrightCrawler } from 'crawlee';
 import type { ProxyConfiguration } from 'apify';
 import type { SearchState, ActorInput } from './types.js';
 import { router, buildSearchUrl, getScrapeState } from './routes.js';
-import { normalizeInput } from './input.js';
+import { normalizeInput, toProxyConfigurationOptions } from './input.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const PAGE_SIZE = 25;
@@ -11,6 +11,16 @@ const PAGE_SIZE = 25;
 await Actor.init();
 
 const input = normalizeInput((await Actor.getInput<ActorInput>()) ?? {});
+
+let proxyConfiguration: ProxyConfiguration | undefined;
+try {
+  proxyConfiguration = await Actor.createProxyConfiguration(
+    toProxyConfigurationOptions(input.proxyConfiguration),
+  );
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  throw new Error(`Booking.com proxy configuration failed: ${message}`);
+}
 
 const initialRequests: Array<{ url: string; userData: { state: SearchState }; label: string }> = [];
 let searchChargeLimitReached = false;
@@ -33,6 +43,7 @@ for (const destination of input.destinations) {
     maxResults: input.maxResults,
     currency: input.currency,
     collectedCount: 0,
+    examinedCount: 0,
     seenIds: [],
     offset: 0,
     pageSize: PAGE_SIZE,
@@ -51,16 +62,6 @@ if (searchChargeLimitReached) {
   console.warn(`Maximum cost per run reached after ${initialRequests.length} charged destination search(es); only those searches will run.`);
 }
 
-let proxyConfiguration: ProxyConfiguration | undefined;
-try {
-  proxyConfiguration = await Actor.createProxyConfiguration({
-    useApifyProxy: input.proxyConfiguration?.useApifyProxy ?? true,
-    groups: input.proxyConfiguration?.apifyProxyGroups ?? ['RESIDENTIAL'],
-  });
-} catch {
-  proxyConfiguration = undefined;
-}
-
 let failedRequestCount = 0;
 
 const crawler = new PlaywrightCrawler({
@@ -77,8 +78,10 @@ const crawler = new PlaywrightCrawler({
   maxRequestRetries: 3,
   maxSessionRotations: 3,
   retryOnBlocked: true,
-  navigationTimeoutSecs: 60,
-  requestHandlerTimeoutSecs: 120,
+  maxConcurrency: 3,
+  maxRequestsPerMinute: 30,
+  navigationTimeoutSecs: 90,
+  requestHandlerTimeoutSecs: 180,
   maxRequestsPerCrawl: 2000,
   failedRequestHandler: async ({ request, log }, error) => {
     failedRequestCount++;
@@ -106,16 +109,6 @@ const crawler = new PlaywrightCrawler({
 
       await page.setExtraHTTPHeaders({
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Sec-Ch-Ua': '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
       });
     },
   ],
@@ -130,8 +123,14 @@ try {
 }
 
 const scrapeState = getScrapeState();
-if (scrapeState.chargedHotelCount === 0) {
+const allSearchesCompletedEmpty = scrapeState.noResultDestinationCount === initialRequests.length
+  && failedRequestCount === 0;
+if (scrapeState.chargedHotelCount === 0 && !allSearchesCompletedEmpty) {
   throw new Error(`No Booking.com hotel records were charged and saved. Failed requests: ${failedRequestCount}.`);
+}
+
+if (allSearchesCompletedEmpty) {
+  console.info(`Booking.com returned no matching properties for ${scrapeState.noResultDestinationCount} destination search(es).`);
 }
 
 if (scrapeState.spendingLimitReached) {
