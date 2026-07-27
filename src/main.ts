@@ -110,6 +110,15 @@ const crawler = new PlaywrightCrawler({
       await page.setExtraHTTPHeaders({
         'Accept-Language': 'en-US,en;q=0.9',
       });
+
+      await page.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+          route.abort().catch(() => {});
+        } else {
+          route.continue().catch(() => {});
+        }
+      });
     },
   ],
 });

@@ -74,7 +74,7 @@
         "hotel-scraped": {
           "eventTitle": "Hotel scraped",
           "eventDescription": "Charged once for each clean Booking.com hotel record saved to the dataset.",
-          "eventPriceUsd": 0.008,
+          "eventPriceUsd": 0.004,
           "isPrimaryEvent": true,
           "isOneTimeEvent": false
         }

@@ -88,8 +88,6 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     throw new Error(`BOOKING_BLOCKED: ${state.destination} offset ${state.offset}`);
   }
 
-  await randomDelay(page, 1500, 3000);
-
   await handleCookieConsent(page);
   await handleCurrencyDropdown(page, state.currency, log);
 
@@ -116,7 +114,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     throw new Error(`PROPERTY_CARDS_NOT_RENDERED: ${state.destination} offset ${state.offset}`);
   }
 
-  await randomDelay(page, 1000, 2000);
+  await randomDelay(page, 100, 300);
 
   const cards = page.locator('[data-testid="property-card"]');
   const cardCount = await cards.count();

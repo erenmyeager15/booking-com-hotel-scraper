@@ -55,7 +55,7 @@ This Actor uses Apify Pay Per Event pricing. The live Store configuration charge
 | Event | Price | When charged |
 | --- | ---: | --- |
 | `apify-actor-start` | $0.00005 per GB | When the run starts, minimum one event |
-| `hotel-scraped` | $0.008 | For each clean hotel record saved |
+| `hotel-scraped` | $0.004 | For each clean hotel record saved |
 
 The current live pricing does not expose a separate per-destination search event. Hotel records are saved through the `hotel-scraped` event, and the run stops when the user's maximum cost limit is reached.
 
@@ -143,10 +143,10 @@ The default **Hotel Records** dataset view is designed for quick export to CSV, 
 ## Technical Details
 
 - Runtime: Node.js 20 on `apify/actor-node-playwright-chrome:20`
-- Scraping engine: Crawlee PlaywrightCrawler
-- Proxy: Apify residential proxy recommended for cloud runs
-- Retry policy: 3 retries with blocked-request retry handling
-- Browser safety: up to 3 concurrent pages, 30 requests per minute, and 40 candidate pages per destination
+- Scraping engine: Crawlee PlaywrightCrawler (Heavily Optimized)
+- Proxy: Apify Proxy by default; Residential only when the cheaper path is blocked
+- Retry policy: 2 retries with blocked-request retry handling
+- Browser safety: up to 3 concurrent pages, 30 requests per minute, and page depth capped by `maxPagesPerDestination`. All media/fonts/styles are blocked to save RAM/CPU.
 - Storage: Apify Dataset
 - Charge model: `Actor.pushData(record, "hotel-scraped")` per saved hotel
 
