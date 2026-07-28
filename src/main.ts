@@ -69,7 +69,7 @@ const crawler = new PlaywrightCrawler({
   useSessionPool: true,
   persistCookiesPerSession: true,
   sessionPoolOptions: {
-    maxPoolSize: 100,
+    maxPoolSize: 20,
     sessionOptions: {
       maxUsageCount: 30,
     },
@@ -78,7 +78,7 @@ const crawler = new PlaywrightCrawler({
   maxRequestRetries: 3,
   maxSessionRotations: 3,
   retryOnBlocked: true,
-  maxConcurrency: 3,
+  maxConcurrency: 1,
   maxRequestsPerMinute: 30,
   navigationTimeoutSecs: 90,
   requestHandlerTimeoutSecs: 180,

@@ -67,7 +67,7 @@ Cost-control tips:
 - Leave `minReviewScore` at 0 for the broadest first test; add 7 or higher after output looks right.
 - Keep residential proxy enabled for reliability.
 - Increase destinations and result limits only after a small run returns the expected data.
-- Runtime memory is capped at 2 GB to keep runs predictable.
+- Runtime memory defaults to 1 GB and can be raised to 2 GB for larger batches.
 
 ## Input
 

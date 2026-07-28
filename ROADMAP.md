@@ -1,29 +1,27 @@
 # Booking.com Hotel Scraper Roadmap
 
-## ✅ Phase 1: Profitability Optimization (Completed)
-- **Status**: Deployed
-- **Goal**: Make the scraper highly profitable at a competitive price point.
-- **Actions Taken**:
-  - Reduced memory footprint to 512MB.
-  - Aggressively blocked all non-essential assets (Images, CSS, Fonts, Media) to reduce bandwidth and CPU usage.
-  - Removed all hardcoded arbitrary delays (Wait times cut from up to 3s down to 100-300ms).
-  - Switched exclusively to Pay-per-event pricing model.
-  - Validated AWS WAF challenge bypass using the optimized Playwright engine.
-- **Outcome**: The event price is now `$0.004` per hotel scraped, while the backend platform costs were reduced to an estimated `~$1.00-$1.50` per 1K results.
+## Phase 1: Playwright optimization and pricing
 
-## 📈 Phase 2: Monitoring & Verification (Current)
-- **Status**: In Progress
-- **Goal**: Verify real-world profitability and stability.
-- **Actions**:
-  - Monitor the Apify Insights tab for the next 7-14 days.
-  - Track "Cost per 1,000 runs" to ensure the compute optimizations hold true for production traffic.
-  - Verify that the `$0.004` price point attracts more volume and generates positive margins.
-  - Monitor the "Issues" tab for any new AWS WAF variations or layout changes on Booking.com.
+- **Status**: Published; profitability not yet verified.
+- Heavy browser assets (`image`, `media`, `font`, and `stylesheet`) are blocked.
+- The live pay-per-event price is `$0.004` per hotel scraped (`$4.00 / 1,000`).
+- The default and minimum memory were reduced to `1024 MB`, with `2048 MB` still available for larger batches. Browser concurrency is capped at one page to keep the 1 GB default stable.
+- Residential proxy use remains in the documented/default example path.
+- The previous estimate of `$1.00-$1.50 / 1,000` backend cost is unverified and must not be used as a profitability claim. The last observed Apify estimate before this release was `$28.86 / 1,000 results`.
 
-## 🚀 Phase 3: Growth & Feature Expansion (Future)
-- **Status**: Planned
-- **Goal**: Increase revenue per user by offering premium data fields.
-- **Potential Features**:
-  - **Premium Detail Scraping**: Add an option to scrape "Rooms & Surroundings" data (similar to Voyager). This would require navigating to the hotel detail page, which is more expensive, but can be charged as a separate premium PPE event (e.g., `$0.008` for standard, `$0.012` for deep scraping).
-  - **GraphQL/Internal API Discovery**: Investigate if Booking.com's mobile API or internal GraphQL endpoints can be scraped directly to completely bypass the AWS WAF JS-challenge, dropping costs to near-zero.
-  - **Dynamic Rate Limiting**: Implement smarter auto-scaling based on Apify's CPU signals.
+## Phase 2: Live cost verification
+
+- **Status**: In progress from 2026-07-27.
+- Treat `$4.00 / 1,000` as a controlled live experiment, not a proven sustainable price.
+- Track paying users, results, success rate, cost per 1,000 results, revenue, profit, and margin for 24-72 hours.
+- Keep the price only if measured cost per 1,000 stays below `$4.00` with an adequate safety margin.
+- Roll back the price or pause promotion if measured cost remains above revenue.
+- Do not run extra paid smoke tests unless a warning, user report, or unexpected success-rate drop requires one.
+
+## Phase 3: Cost-first architecture
+
+- **Status**: Planned if the live build remains unprofitable.
+- Reduce memory, retries, session rotations, pagination depth, waits, and unnecessary Residential proxy usage.
+- Benchmark cost separately for search-only and hotel-detail modes.
+- Investigate Booking.com internal API or GraphQL requests as an HTTP-first path, retaining Playwright only as a fallback where technically and legally appropriate.
+- Add premium detail scraping only after each mode has measured cost and a defensible event price.

@@ -87,10 +87,10 @@
   },
   "defaultRunOptions": {
     "build": "latest",
-    "memoryMbytes": 2048,
+    "memoryMbytes": 1024,
     "timeoutSecs": 1200
   },
-  "minMemoryMbytes": 2048,
+  "minMemoryMbytes": 1024,
   "maxMemoryMbytes": 2048,
   "webScraper": false
 }
