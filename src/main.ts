@@ -113,33 +113,24 @@ const crawler = new PlaywrightCrawler({
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--disable-background-networking',
-        '--disable-component-update',
-        '--disable-default-apps',
-        '--disable-sync',
-        '--no-first-run',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
       ],
     },
   },
   preNavigationHooks: [
-    async ({ page }, gotoOptions) => {
-      gotoOptions.waitUntil = 'domcontentloaded';
-      gotoOptions.timeout = 45000;
-
+    async ({ page }) => {
       const w = 1280 + Math.floor(Math.random() * 200);
       const h = 720 + Math.floor(Math.random() * 200);
       await page.setViewportSize({ width: w, height: h });
 
       await page.setExtraHTTPHeaders({
         'Accept-Language': 'en-US,en;q=0.9',
-        DNT: '1',
       });
 
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        const url = route.request().url();
-        const isTrackingRequest = /(?:google-analytics|googletagmanager|doubleclick|facebook\.com\/tr|hotjar|clarity\.ms)/i.test(url);
-        if (['image', 'media', 'font', 'stylesheet'].includes(type) || isTrackingRequest) {
+        if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
           route.abort().catch(() => {});
         } else {
           route.continue().catch(() => {});

@@ -83,7 +83,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
 
   log.info(`Page offset=${state.offset} for "${state.destination}" (${state.collectedCount}/${state.maxResults})`);
 
-  if (await inspectBookingPage(page) === 'blocked') {
+  if (await inspectBookingPageAfterChallengeGrace(page) === 'blocked') {
     session?.retire();
     throw new SessionError(`BOOKING_BLOCKED: ${state.destination} offset ${state.offset}`);
   }
@@ -287,6 +287,16 @@ async function inspectBookingPage(page: Page): Promise<BookingDocumentState> {
     snapshot.bodyText,
     snapshot.hasChallengeElement,
   );
+}
+
+async function inspectBookingPageAfterChallengeGrace(page: Page): Promise<BookingDocumentState> {
+  const initialState = await inspectBookingPage(page);
+  if (initialState !== 'blocked') return initialState;
+
+  // Booking can briefly show its challenge shell before a valid residential
+  // session resolves and renders property cards. Do not retire that IP too early.
+  await page.waitForSelector(propertyCardSelector(), { timeout: 8000 }).catch(() => null);
+  return inspectBookingPage(page);
 }
 
 async function handleCookieConsent(page: Page): Promise<boolean> {

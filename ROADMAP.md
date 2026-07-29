@@ -14,6 +14,7 @@
 - **Status**: Reliability hardening implemented on 2026-07-29; live economics still under observation.
 - Direct Apify cloud runs now fail immediately with a clear proxy error instead of waiting through Booking.com's robot-verification page.
 - Booking.com's current `#challenge-container` response is detected explicitly.
+- Transient challenge shells get a short resolution window so valid Residential sessions are not retired before hotel cards render.
 - Request retries and session rotations are bounded to two each, while explicit challenge detection prevents long blocked-page waits.
 - Successful and unsuccessful runs write a machine-readable `OUTPUT` summary.
 - Treat `$4.00 / 1,000` as a controlled live experiment, not a proven sustainable price.
