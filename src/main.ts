@@ -63,7 +63,7 @@ for (const destination of input.destinations) {
     examinedCount: 0,
     seenIds: [],
     offset: 0,
-    pageSize: Math.min(PAGE_SIZE, input.maxResults),
+    pageSize: PAGE_SIZE,
     hasMore: true,
   };
 
@@ -92,8 +92,8 @@ const crawler = new PlaywrightCrawler({
     },
   },
   requestHandler: router,
-  maxRequestRetries: 1,
-  maxSessionRotations: 1,
+  maxRequestRetries: 2,
+  maxSessionRotations: 2,
   retryOnBlocked: true,
   maxConcurrency: 1,
   maxRequestsPerMinute: 30,
@@ -118,8 +118,6 @@ const crawler = new PlaywrightCrawler({
         '--disable-default-apps',
         '--disable-sync',
         '--no-first-run',
-        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-          + '(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
       ],
     },
   },

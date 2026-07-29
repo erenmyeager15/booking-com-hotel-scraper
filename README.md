@@ -149,7 +149,7 @@ The default key-value store also contains an `OUTPUT` record with `status`, `res
 - Runtime: Node.js 20 on `apify/actor-node-playwright-chrome:20`
 - Scraping engine: Crawlee PlaywrightCrawler (Heavily Optimized)
 - Proxy: Apify Residential by default, or a suitable custom proxy; unproxied Apify cloud runs fail early
-- Retry policy: one bounded request retry and one session rotation for blocked responses
+- Retry policy: up to two fast retries/session rotations for blocked responses
 - Browser safety: one concurrent page, 30 requests per minute, 45-second navigation timeout, and pagination capped at 40 pages per destination. Media, fonts, styles, and common analytics requests are blocked to reduce transfer and memory use.
 - Storage: Apify Dataset
 - Charge model: `Actor.pushData(record, "hotel-scraped")` per saved hotel
