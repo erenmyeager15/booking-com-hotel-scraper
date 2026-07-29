@@ -3,7 +3,11 @@ import { PlaywrightCrawler } from 'crawlee';
 import type { ProxyConfiguration } from 'apify';
 import type { SearchState, ActorInput } from './types.js';
 import { router, buildSearchUrl, getScrapeState } from './routes.js';
-import { normalizeInput, toProxyConfigurationOptions } from './input.js';
+import {
+  normalizeInput,
+  requiresCloudProxy,
+  toProxyConfigurationOptions,
+} from './input.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const PAGE_SIZE = 25;
@@ -11,6 +15,19 @@ const PAGE_SIZE = 25;
 await Actor.init();
 
 const input = normalizeInput((await Actor.getInput<ActorInput>()) ?? {});
+const isCloudRun = Boolean(process.env.APIFY_ACTOR_RUN_ID);
+
+if (requiresCloudProxy(input.proxyConfiguration, isCloudRun)) {
+  await Actor.setValue('OUTPUT', {
+    status: 'invalid_proxy_configuration',
+    message: 'Booking.com challenges direct Apify cloud traffic. Enable Residential proxy or provide a custom proxy URL.',
+    results: 0,
+  });
+  throw new Error(
+    'Direct Apify cloud traffic is not supported because Booking.com presents a verification challenge. '
+    + 'Enable Apify Residential proxy or provide a custom proxy URL.',
+  );
+}
 
 let proxyConfiguration: ProxyConfiguration | undefined;
 try {
@@ -46,7 +63,7 @@ for (const destination of input.destinations) {
     examinedCount: 0,
     seenIds: [],
     offset: 0,
-    pageSize: PAGE_SIZE,
+    pageSize: Math.min(PAGE_SIZE, input.maxResults),
     hasMore: true,
   };
 
@@ -69,19 +86,19 @@ const crawler = new PlaywrightCrawler({
   useSessionPool: true,
   persistCookiesPerSession: true,
   sessionPoolOptions: {
-    maxPoolSize: 20,
+    maxPoolSize: 10,
     sessionOptions: {
-      maxUsageCount: 30,
+      maxUsageCount: 10,
     },
   },
   requestHandler: router,
-  maxRequestRetries: 3,
-  maxSessionRotations: 3,
+  maxRequestRetries: 1,
+  maxSessionRotations: 1,
   retryOnBlocked: true,
   maxConcurrency: 1,
   maxRequestsPerMinute: 30,
-  navigationTimeoutSecs: 90,
-  requestHandlerTimeoutSecs: 180,
+  navigationTimeoutSecs: 45,
+  requestHandlerTimeoutSecs: 90,
   maxRequestsPerCrawl: 2000,
   failedRequestHandler: async ({ request, log }, error) => {
     failedRequestCount++;
@@ -96,24 +113,35 @@ const crawler = new PlaywrightCrawler({
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--no-first-run',
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+          + '(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
       ],
     },
   },
   preNavigationHooks: [
-    async ({ page }) => {
+    async ({ page }, gotoOptions) => {
+      gotoOptions.waitUntil = 'domcontentloaded';
+      gotoOptions.timeout = 45000;
+
       const w = 1280 + Math.floor(Math.random() * 200);
       const h = 720 + Math.floor(Math.random() * 200);
       await page.setViewportSize({ width: w, height: h });
 
       await page.setExtraHTTPHeaders({
         'Accept-Language': 'en-US,en;q=0.9',
+        DNT: '1',
       });
 
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+        const url = route.request().url();
+        const isTrackingRequest = /(?:google-analytics|googletagmanager|doubleclick|facebook\.com\/tr|hotjar|clarity\.ms)/i.test(url);
+        if (['image', 'media', 'font', 'stylesheet'].includes(type) || isTrackingRequest) {
           route.abort().catch(() => {});
         } else {
           route.continue().catch(() => {});
@@ -135,6 +163,13 @@ const scrapeState = getScrapeState();
 const allSearchesCompletedEmpty = scrapeState.noResultDestinationCount === initialRequests.length
   && failedRequestCount === 0;
 if (scrapeState.chargedHotelCount === 0 && !allSearchesCompletedEmpty) {
+  await Actor.setValue('OUTPUT', {
+    status: 'failed_no_results',
+    results: 0,
+    failedRequests: failedRequestCount,
+    destinationsAttempted: initialRequests.length,
+    spendingLimitReached: scrapeState.spendingLimitReached,
+  });
   throw new Error(`No Booking.com hotel records were charged and saved. Failed requests: ${failedRequestCount}.`);
 }
 
@@ -145,6 +180,15 @@ if (allSearchesCompletedEmpty) {
 if (scrapeState.spendingLimitReached) {
   console.warn(`Booking.com crawl stopped at the user's spending limit after ${scrapeState.chargedHotelCount} charged hotel records.`);
 }
+
+await Actor.setValue('OUTPUT', {
+  status: allSearchesCompletedEmpty ? 'succeeded_no_matches' : 'succeeded',
+  results: scrapeState.chargedHotelCount,
+  failedRequests: failedRequestCount,
+  destinationsAttempted: initialRequests.length,
+  noResultDestinations: scrapeState.noResultDestinationCount,
+  spendingLimitReached: scrapeState.spendingLimitReached,
+});
 
 await Actor.exit();
 

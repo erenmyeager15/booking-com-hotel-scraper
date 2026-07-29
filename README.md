@@ -12,8 +12,9 @@ Each clean hotel record is saved through the `hotel-scraped` pay-per-event flow,
 - Explicit or automatically generated future check-in and check-out dates
 - Adults, rooms, currency, review score, and property type inputs
 - Pagination up to 500 properties per destination
-- Residential proxy support for Apify cloud runs
-- Random delays, session pool, and retry handling
+- Residential and custom proxy support for Apify cloud runs
+- Bounded retry/session handling that avoids long blocked-page loops
+- Machine-readable run summary in the `OUTPUT` key-value-store record
 - Null fallbacks for fields that Booking.com does not expose on every search card
 
 ## Data Extracted
@@ -65,7 +66,8 @@ Cost-control tips:
 - Use a one-night future date range for your first test.
 - Use `maxResults: 1` for the first test run.
 - Leave `minReviewScore` at 0 for the broadest first test; add 7 or higher after output looks right.
-- Keep residential proxy enabled for reliability.
+- Keep Residential proxy enabled for cloud runs. Direct Apify cloud traffic is rejected early because Booking.com presents a verification challenge.
+- Use `maxResults: 1` only as a functional test. Batches amortize the proxy and browser startup cost more efficiently.
 - Increase destinations and result limits only after a small run returns the expected data.
 - Runtime memory defaults to 1 GB and can be raised to 2 GB for larger batches.
 
@@ -115,6 +117,8 @@ To search specific dates, add `checkIn` and `checkOut` in `YYYY-MM-DD` format. O
 
 The default **Hotel Records** dataset view is designed for quick export to CSV, Excel, JSON, or API workflows. It shows the most useful booking research fields first: destination, hotel name, stars, guest score, review count, total price, nightly price, currency, city/country, distance from city center, cancellation signal, property URL, property ID, and scraped timestamp. Original price, discount percentage, thumbnail, sustainability, and Genius signals remain available in full JSON when Booking.com exposes them.
 
+The default key-value store also contains an `OUTPUT` record with `status`, `results`, `failedRequests`, destination counts, and `spendingLimitReached`. This makes schedules and integrations easier to monitor without parsing logs.
+
 ```json
 {
   "propertyId": "royal-national",
@@ -144,9 +148,9 @@ The default **Hotel Records** dataset view is designed for quick export to CSV, 
 
 - Runtime: Node.js 20 on `apify/actor-node-playwright-chrome:20`
 - Scraping engine: Crawlee PlaywrightCrawler (Heavily Optimized)
-- Proxy: Apify Proxy by default; Residential only when the cheaper path is blocked
-- Retry policy: 2 retries with blocked-request retry handling
-- Browser safety: up to 3 concurrent pages, 30 requests per minute, and page depth capped by `maxPagesPerDestination`. All media/fonts/styles are blocked to save RAM/CPU.
+- Proxy: Apify Residential by default, or a suitable custom proxy; unproxied Apify cloud runs fail early
+- Retry policy: one bounded request retry and one session rotation for blocked responses
+- Browser safety: one concurrent page, 30 requests per minute, 45-second navigation timeout, and pagination capped at 40 pages per destination. Media, fonts, styles, and common analytics requests are blocked to reduce transfer and memory use.
 - Storage: Apify Dataset
 - Charge model: `Actor.pushData(record, "hotel-scraped")` per saved hotel
 

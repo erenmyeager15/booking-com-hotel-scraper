@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeInput,
   normalizeProxyConfiguration,
+  requiresCloudProxy,
   toProxyConfigurationOptions,
 } from './input.js';
 import {
@@ -98,10 +99,24 @@ test('preserves direct, custom, and country-specific proxy intent', () => {
     }),
     /cannot combine/,
   );
+  assert.equal(requiresCloudProxy({ useApifyProxy: false }, true), true);
+  assert.equal(requiresCloudProxy({ useApifyProxy: false }, false), false);
+  assert.equal(requiresCloudProxy({
+    useApifyProxy: false,
+    proxyUrls: ['http://proxy.example:8000'],
+  }, true), false);
 });
 
 test('classifies Booking.com block and genuine no-result pages', () => {
   assert.equal(classifyBookingDocument('Security check', 'Verify you are human'), 'blocked');
+  assert.equal(
+    classifyBookingDocument(
+      'Booking.com',
+      'In order to continue, we need to verify that you are not a robot.',
+    ),
+    'blocked',
+  );
+  assert.equal(classifyBookingDocument('Booking.com', '', true), 'blocked');
   assert.equal(classifyBookingDocument('Booking.com', 'No properties found for these dates'), 'no-results');
   assert.equal(classifyBookingDocument('Hotels in London', '125 properties found'), 'normal');
 });

@@ -82,7 +82,7 @@
     "proxyConfiguration": {
       "title": "Proxy Configuration",
       "type": "object",
-      "description": "Proxy settings for scraping. Residential proxy is recommended for reliable Booking.com access.",
+      "description": "Proxy settings for scraping. Apify Residential or a suitable custom proxy is required for cloud runs because Booking.com challenges direct Apify cloud traffic.",
       "editor": "proxy",
       "default": {
         "useApifyProxy": true,

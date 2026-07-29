@@ -86,6 +86,12 @@ export function normalizeProxyConfiguration(value: unknown): ProxyConfigInput {
   };
 }
 
+export function requiresCloudProxy(value: ProxyConfigInput, isCloudRun: boolean): boolean {
+  return isCloudRun
+    && value.useApifyProxy === false
+    && !value.proxyUrls?.length;
+}
+
 export function toProxyConfigurationOptions(value: ProxyConfigInput) {
   if (value.proxyUrls?.length) return { proxyUrls: [...value.proxyUrls] };
   if (value.useApifyProxy === false) return { useApifyProxy: false };

@@ -1,4 +1,4 @@
-import { createPlaywrightRouter } from 'crawlee';
+import { createPlaywrightRouter, SessionError } from 'crawlee';
 import { Actor } from 'apify';
 import type { Page, Locator } from 'playwright';
 import type { HotelRecord, SearchState } from './types.js';
@@ -19,7 +19,7 @@ export function classifyBookingDocument(
   const text = `${title} ${bodyText}`.toLowerCase();
   if (
     hasChallengeElement
-    || /verify (?:that )?you are human|verify you're human|are you a robot|captcha/.test(text)
+    || /verify (?:that )?you are (?:a )?(?:human|robot)|verify you're human|not a robot|robot check|captcha/.test(text)
     || /access denied|unusual traffic|security check|automated requests/.test(text)
   ) return 'blocked';
 
@@ -85,24 +85,23 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
 
   if (await inspectBookingPage(page) === 'blocked') {
     session?.retire();
-    throw new Error(`BOOKING_BLOCKED: ${state.destination} offset ${state.offset}`);
+    throw new SessionError(`BOOKING_BLOCKED: ${state.destination} offset ${state.offset}`);
   }
 
   await handleCookieConsent(page);
-  await handleCurrencyDropdown(page, state.currency, log);
 
   if (await inspectBookingPage(page) === 'blocked') {
     session?.retire();
-    throw new Error(`BOOKING_BLOCKED_AFTER_INTERACTION: ${state.destination} offset ${state.offset}`);
+    throw new SessionError(`BOOKING_BLOCKED_AFTER_INTERACTION: ${state.destination} offset ${state.offset}`);
   }
 
   try {
-    await page.waitForSelector('[data-testid="property-card"]', { timeout: 30000 });
+    await page.waitForSelector(propertyCardSelector(), { timeout: 18000 });
   } catch {
     const documentState = await inspectBookingPage(page);
     if (documentState === 'blocked') {
       session?.retire();
-      throw new Error(`BOOKING_BLOCKED_WHILE_WAITING: ${state.destination} offset ${state.offset}`);
+      throw new SessionError(`BOOKING_BLOCKED_WHILE_WAITING: ${state.destination} offset ${state.offset}`);
     }
     if (documentState === 'no-results' || state.offset > 0) {
       markNoResultIfComplete(state);
@@ -116,7 +115,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
 
   await randomDelay(page, 100, 300);
 
-  const cards = page.locator('[data-testid="property-card"]');
+  const cards = page.locator(propertyCardSelector());
   const cardCount = await cards.count();
   log.info(`Found ${cardCount} cards`);
 
@@ -124,7 +123,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     const documentState = await inspectBookingPage(page);
     if (documentState === 'blocked') {
       session?.retire();
-      throw new Error(`BOOKING_BLOCKED_EMPTY_CARDS: ${state.destination} offset ${state.offset}`);
+      throw new SessionError(`BOOKING_BLOCKED_EMPTY_CARDS: ${state.destination} offset ${state.offset}`);
     }
     if (documentState === 'no-results' || state.offset > 0) {
       markNoResultIfComplete(state);
@@ -241,6 +240,13 @@ function markNoResultIfComplete(state: SearchState): void {
   }
 }
 
+function propertyCardSelector(): string {
+  return [
+    '[data-testid="property-card"]',
+    '[data-testid="property-card-container"]',
+  ].join(',');
+}
+
 export function buildSearchUrl(state: SearchState): string {
   const base = 'https://www.booking.com/searchresults.html';
   const params = new URLSearchParams();
@@ -271,7 +277,8 @@ async function inspectBookingPage(page: Page): Promise<BookingDocumentState> {
     title: document.title || '',
     bodyText: (document.body?.innerText || '').slice(0, 5000),
     hasChallengeElement: Boolean(document.querySelector(
-      'iframe[src*="captcha"], [data-testid*="captcha"], #challenge-running, [class*="captcha"]',
+      'iframe[src*="captcha"], [data-testid*="captcha"], #challenge-running, '
+      + '#challenge-container, script[src*="/__challenge_"], [class*="captcha"]',
     )),
   })).catch(() => ({ title: '', bodyText: '', hasChallengeElement: false }));
 
@@ -305,36 +312,13 @@ async function handleCookieConsent(page: Page): Promise<boolean> {
   return false;
 }
 
-async function handleCurrencyDropdown(page: Page, currency: string, log: any): Promise<void> {
-  if (currency.toUpperCase() === 'USD') return;
-  try {
-    const trigger = page.locator(
-      '[data-testid="currency-selector-trigger"], [data-testid="currency-select"], button[data-testid*="currency"]'
-    ).first();
-    const visible = await trigger.isVisible({ timeout: 3000 }).catch(() => false);
-    if (!visible) return;
-
-    await trigger.click();
-    await page.waitForTimeout(600);
-
-    const option = page.locator(
-      `[data-testid*="currency-option"]:has-text("${currency}"), a:has-text("${currency}")`
-    ).first();
-    const optionVisible = await option.isVisible({ timeout: 2000 }).catch(() => false);
-    if (!optionVisible) return;
-
-    await option.click();
-    await page.waitForTimeout(1500);
-    await page.waitForLoadState('networkidle');
-    log.info(`Currency -> ${currency}`);
-  } catch {
-    log.debug('Currency selector not available');
-  }
-}
-
 async function extractProperty(card: Locator, state: SearchState): Promise<HotelRecord | null> {
   try {
-    const link = card.locator('a[data-testid="title-link"], a[href*="/hotel/"]').first();
+    const link = card.locator([
+      'a[data-testid="title-link"]',
+      'a[data-testid="property-card-desktop-single-image"]',
+      'a[href*="/hotel/"]',
+    ].join(',')).first();
     const href = await link.getAttribute('href').catch(() => null);
     const propertyUrl = normalizeBookingUrl(href);
 
@@ -342,7 +326,9 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
       (await safeAttr(card, 'data-property-id')) ||
       extractIdFromHref(href);
 
-    const hotelName = cleanText(await safeText(card.locator('[data-testid="title"]').first()));
+    const hotelName = cleanText(await safeText(
+      card.locator('[data-testid="title"], [data-testid="property-card-title"]').first(),
+    ));
     if (!hotelName || !propertyUrl) return null;
 
     const cardText = cleanText(await safeText(card)) ?? '';

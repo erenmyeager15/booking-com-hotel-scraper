@@ -11,7 +11,11 @@
 
 ## Phase 2: Live cost verification
 
-- **Status**: In progress from 2026-07-27.
+- **Status**: Reliability hardening implemented on 2026-07-29; live economics still under observation.
+- Direct Apify cloud runs now fail immediately with a clear proxy error instead of waiting through Booking.com's robot-verification page.
+- Booking.com's current `#challenge-container` response is detected explicitly.
+- Request retries and session rotations are bounded to one each, navigation waits are shorter, and tiny runs request fewer rows.
+- Successful and unsuccessful runs write a machine-readable `OUTPUT` summary.
 - Treat `$4.00 / 1,000` as a controlled live experiment, not a proven sustainable price.
 - Track paying users, results, success rate, cost per 1,000 results, revenue, profit, and margin for 24-72 hours.
 - Keep the price only if measured cost per 1,000 stays below `$4.00` with an adequate safety margin.
