@@ -5,7 +5,7 @@
   "description": "Scrape public Booking.com accommodation search results with hotel names, prices, guest scores, review counts, cancellation signals, property IDs, images, and URLs.",
   "version": "1.0",
   "buildTag": "latest",
-  "categories": ["TRAVEL", "OTHER"],
+  "categories": ["TRAVEL"],
   "categoriesVersion": "1.0.0",
   "dockerfile": "Dockerfile",
   "input": "../INPUT_SCHEMA.json",

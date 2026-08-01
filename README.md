@@ -1,4 +1,4 @@
-# Booking.com Hotel Scraper - Prices, Reviews & Availability
+# Booking.com Hotel Scraper: Prices & Availability
 
 Scrape Booking.com hotel and accommodation search results for travel market research, price monitoring, and competitor analysis. The actor searches one or more destinations for a date range, extracts clean property records, deduplicates by Booking.com property ID, and saves the results to an Apify Dataset. Export to JSON, CSV, Excel, or HTML, or pull via the Apify API. No login and no API key required.
 
@@ -119,28 +119,30 @@ The default **Hotel Records** dataset view is designed for quick export to CSV, 
 
 The default key-value store also contains an `OUTPUT` record with `status`, `results`, `failedRequests`, destination counts, and `spendingLimitReached`. This makes schedules and integrations easier to monitor without parsing logs.
 
+The following row came from a successful one-result London run on July 29, 2026.
+
 ```json
 {
-  "propertyId": "royal-national",
-  "hotelName": "Royal National Hotel",
-  "starRating": 3,
+  "propertyId": "radissonblubloomsbury",
+  "hotelName": "Radisson Blu Hotel, London Bloomsbury",
+  "starRating": 4,
   "guestReviewScore": 7.9,
-  "reviewCount": 19601,
+  "reviewCount": 4665,
   "city": "London",
   "country": "United Kingdom",
-  "distanceFromCityCenter": "1.8 km from downtown",
-  "totalPrice": 261,
-  "pricePerNight": 261,
-  "originalPrice": 290,
+  "distanceFromCityCenter": "1.1 km from downtown",
+  "totalPrice": 268,
+  "pricePerNight": 268,
+  "originalPrice": 298,
   "discountPercentage": 10,
   "currency": "USD",
   "freeCancellation": false,
-  "propertyUrl": "https://www.booking.com/hotel/gb/royal-national.html",
-  "thumbnailImageUrl": "https://cf.bstatic.com/xdata/images/hotel/square240/example.webp",
-  "sustainabilityBadge": false,
+  "propertyUrl": "https://www.booking.com/hotel/gb/radissonblubloomsbury.html",
+  "thumbnailImageUrl": "https://cf.bstatic.com/xdata/images/hotel/square240/825877231.webp?k=2c78396ced2c2810e1c00a0a57cc901e1bd41d75e1c5fc46655bed6d7331ab93&o=",
+  "sustainabilityBadge": true,
   "geniusDiscount": false,
   "destination": "London, United Kingdom",
-  "scrapedAt": "2026-06-21T12:43:43.000Z"
+  "scrapedAt": "2026-07-29T07:42:45.759Z"
 }
 ```
 
