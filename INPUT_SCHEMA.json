@@ -1,6 +1,6 @@
 {
   "title": "Booking.com Hotel Scraper Input",
-  "description": "Search public Booking.com accommodation listings. The default run uses London, one full results page of 50 properties, and a dynamic one-night stay 30 days after the run date.",
+  "description": "Search public Booking.com accommodation listings. The default run uses London, one full results page of 25 properties, and a dynamic one-night stay 30 days after the run date.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
@@ -65,8 +65,8 @@
     "maxResults": {
       "title": "Maximum Results",
       "type": "integer",
-      "description": "Maximum number of properties to scrape per destination. The default of 50 matches one full Booking.com results page and gives the lowest cost per property, because a search page costs the same to fetch whether you keep 1 property or 50.",
-      "default": 50,
+      "description": "Maximum number of properties to scrape per destination. The default of 25 is the measured yield of one Booking.com results page and gives the lowest cost per property, because a page costs the same to fetch whether you keep 1 property or 25. Values above 25 per destination may not return more properties today; add more destinations instead.",
+      "default": 25,
       "minimum": 1,
       "maximum": 500,
       "editor": "number"

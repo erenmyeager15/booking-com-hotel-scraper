@@ -48,11 +48,14 @@ export function normalizeInput(input: ActorInput = {}, today = new Date()): Norm
       ? input.propertyTypes.map((type) => cleanText(type)).filter(Boolean)
       : [],
     minReviewScore: clampNumber(input.minReviewScore, 0, 0, 10),
-    // Defaults to a full Booking.com results page. A search page costs the same in
-    // proxy transfer whether one card or fifty are kept, and a measured London page
-    // renders 50 cards, so keeping fewer simply discards bandwidth already paid for.
-    // A default of 1 spent a whole page to bill a single hotel and lost money.
-    maxResults: clampInteger(input.maxResults, 50, 1, 500),
+    // Defaults to the real yield of one Booking.com results page. A page costs the
+    // same in proxy transfer whether 1 or 25 records are kept, so a default of 1 spent
+    // a whole page to bill a single hotel and lost money on every run. Do not raise
+    // this default past 25: a measured page renders 50 cards but only ~25 become valid
+    // records, and requesting more triggers an offset=25 fetch that returns the same
+    // cards and zero new records, so it costs a second page for nothing. See the
+    // pagination limitation noted in ROADMAP.md.
+    maxResults: clampInteger(input.maxResults, 25, 1, 500),
     currency: ALLOWED_CURRENCIES.has(currency) ? currency : 'USD',
     proxyConfiguration: normalizeProxyConfiguration(input.proxyConfiguration),
   };

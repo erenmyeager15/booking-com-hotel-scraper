@@ -1,5 +1,42 @@
 # Booking.com Hotel Scraper Roadmap
 
+## Phase 3: Measured run economics (2026-08-12)
+
+Two paid verification runs on build **1.0.32/1.0.33**, London, 2 adults, 1 room,
+replaced every earlier cost estimate with measured figures.
+
+**Residential run `TsoLfY5QQiAWN6W7l`** - SUCCEEDED, 42.2s, 25 records:
+total **$0.03336**, of which `PROXY_RESIDENTIAL_TRANSFER` was **$0.03006 (90%)** on
+**3.85 MB**, compute **$0.00234 (7%)**, everything else 3%. Cost per property
+**$0.001335**.
+
+**Datacenter run `655ETFxqPKfEPFtW4`** - SUCCEEDED, 71.2s, 25 records, proxy group
+`BUYPROXIES94952`: total **$0.00540** with **zero** residential bytes. Cost per
+property **$0.000216**, a **6.2x** improvement and an **84%** cheaper run. Booking.com
+served this datacenter pool without blocking. Cost is now dominated by **compute
+($0.00396, 73%)** rather than proxy. Single sample; repeat before relying on it.
+
+Margins at measured datacenter cost, net of Apify's 20% commission: **93%** at $4/1k,
+**87%** at $2/1k, **82%** at $1.50/1k, **73%** at $1/1k. At residential cost, $1.50/1k
+is **loss-making** at -11%.
+
+### Open issues found during verification
+
+- **Pagination does not advance.** With `maxResults: 50` the browser logged
+  `Found 50 cards` at `offset=0`, kept 25 valid records, then fetched `offset=25`,
+  logged `Found 50 cards` again, and produced **zero** new records. Booking.com
+  returned the same card set, so the second page fetch was pure waste. On residential
+  that nearly doubles run cost for no extra rows. `maxResults` is therefore capped at a
+  practical **~25 per destination** even though the schema still allows 500. Advertise
+  more destinations rather than higher `maxResults` until the offset scheme is fixed.
+- **Only about half of the cards become records.** Pages render 50 cards but yield ~25
+  valid rows, so ad or placeholder cards are being counted in `Found N cards`.
+- **The cheerio fast path never succeeds in production.** It finished in 1-2.5s with no
+  usable cards on both residential and datacenter, so every run pays for the Playwright
+  fallback. Fixing it would cut both proxy bytes and the compute that now dominates cost.
+- Memory is still **1024 MB**. Now that compute is 73% of a datacenter run, dropping to
+  512 MB is worth testing, but only after the browser fallback stops being the norm.
+
 ## Phase 1: Playwright optimization and pricing
 
 - **Status**: Published; profitability not yet verified.
