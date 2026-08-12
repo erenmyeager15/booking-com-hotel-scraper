@@ -48,7 +48,10 @@ export function normalizeInput(input: ActorInput = {}, today = new Date()): Norm
       ? input.propertyTypes.map((type) => cleanText(type)).filter(Boolean)
       : [],
     minReviewScore: clampNumber(input.minReviewScore, 0, 0, 10),
-    maxResults: clampInteger(input.maxResults, 1, 1, 500),
+    // Defaults to one full Booking.com results page. A search page costs the same
+    // in proxy transfer whether one card or fifty are kept, so a default of 1 spent
+    // a whole page of bandwidth to bill a single hotel and lost money on every run.
+    maxResults: clampInteger(input.maxResults, 25, 1, 500),
     currency: ALLOWED_CURRENCIES.has(currency) ? currency : 'USD',
     proxyConfiguration: normalizeProxyConfiguration(input.proxyConfiguration),
   };

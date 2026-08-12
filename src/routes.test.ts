@@ -12,6 +12,7 @@ import {
   countNights,
   decidePageProgress,
   extractIdFromHref,
+  extractPropertyFromSnapshot,
   normalizeBookingUrl,
   parseMoney,
   parseReviewCount,
@@ -44,6 +45,27 @@ test('normalizes Booking.com input and clamps limits', () => {
     useApifyProxy: true,
     apifyProxyGroups: ['RESIDENTIAL'],
   });
+});
+
+test('defaults maxResults to one full results page so a run never pays a whole page fetch for a single row', () => {
+  const input = normalizeInput({
+    destinations: ['London, United Kingdom'],
+    checkIn: '2026-08-15',
+    checkOut: '2026-08-16',
+  }, fixedToday);
+
+  assert.equal(input.maxResults, 25);
+});
+
+test('still honours an explicit low maxResults', () => {
+  const input = normalizeInput({
+    destinations: ['London, United Kingdom'],
+    checkIn: '2026-08-15',
+    checkOut: '2026-08-16',
+    maxResults: 1,
+  }, fixedToday);
+
+  assert.equal(input.maxResults, 1);
 });
 
 test('uses durable dynamic dates when date input is omitted', () => {
@@ -183,4 +205,55 @@ test('parses Booking.com card values', () => {
     normalizeBookingUrl('/hotel/gb/royal-national.html?aid=1#map'),
     'https://www.booking.com/hotel/gb/royal-national.html',
   );
+});
+
+test('builds a hotel record from one browser card snapshot', () => {
+  const state: SearchState = {
+    destination: 'New Delhi, India',
+    checkIn: '2026-09-10',
+    checkOut: '2026-09-12',
+    adults: 2,
+    rooms: 1,
+    propertyTypes: [],
+    minReviewScore: 0,
+    maxResults: 5,
+    currency: 'INR',
+    collectedCount: 0,
+    examinedCount: 0,
+    seenIds: [],
+    offset: 0,
+    pageSize: 25,
+    hasMore: true,
+  };
+
+  const record = extractPropertyFromSnapshot({
+    href: '/hotel/in/example-stay.html?aid=123',
+    propertyId: '12345',
+    hotelName: ' Example Stay ',
+    cardText: 'Example Stay 1,234 reviews Free cancellation Genius',
+    totalText: 'INR 4,000',
+    perNightText: null,
+    originalText: 'INR 5,000',
+    rateInfo: null,
+    reviewScoreAria: 'Scored 8.7 out of 10',
+    reviewScoreText: null,
+    reviewScoreLinkText: null,
+    starLabel: '4 out of 5 stars',
+    distanceText: '1.2 km from downtown',
+    thumbnailSrc: 'https://images.example/hotel.jpg',
+  }, state, '2026-08-09T00:00:00.000Z');
+
+  assert.ok(record);
+  assert.equal(record.propertyId, '12345');
+  assert.equal(record.hotelName, 'Example Stay');
+  assert.equal(record.totalPrice, 4000);
+  assert.equal(record.pricePerNight, 2000);
+  assert.equal(record.originalPrice, 5000);
+  assert.equal(record.discountPercentage, 20);
+  assert.equal(record.guestReviewScore, 8.7);
+  assert.equal(record.reviewCount, 1234);
+  assert.equal(record.starRating, 4);
+  assert.equal(record.freeCancellation, true);
+  assert.equal(record.geniusDiscount, true);
+  assert.equal(record.propertyUrl, 'https://www.booking.com/hotel/in/example-stay.html');
 });
