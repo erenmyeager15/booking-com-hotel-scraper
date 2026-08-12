@@ -54,7 +54,7 @@ test('defaults maxResults to one full results page so a run never pays a whole p
     checkOut: '2026-08-16',
   }, fixedToday);
 
-  assert.equal(input.maxResults, 25);
+  assert.equal(input.maxResults, 50);
 });
 
 test('still honours an explicit low maxResults', () => {

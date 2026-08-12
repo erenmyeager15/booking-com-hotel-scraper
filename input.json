@@ -4,7 +4,7 @@
   "rooms": 1,
   "propertyTypes": [],
   "minReviewScore": 0,
-  "maxResults": 25,
+  "maxResults": 50,
   "currency": "USD",
   "proxyConfiguration": {
     "useApifyProxy": true,
