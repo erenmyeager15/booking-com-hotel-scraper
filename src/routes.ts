@@ -1,6 +1,6 @@
 import { createPlaywrightRouter, SessionError } from 'crawlee';
 import { Actor } from 'apify';
-import type { Page, Locator } from 'playwright';
+import type { Page } from 'playwright';
 import type { HotelRecord, SearchState } from './types.js';
 import { PROPERTY_TYPE_HT_IDS } from './types.js';
 
@@ -10,6 +10,23 @@ export const MAX_PAGES_PER_DESTINATION = 40;
 
 export type BookingDocumentState = 'normal' | 'blocked' | 'no-results';
 export type PageProgressAction = 'next' | 'stop' | 'retry';
+
+export interface PropertyCardSnapshot {
+  href: string | null;
+  propertyId: string | null;
+  hotelName: string | null;
+  cardText: string | null;
+  totalText: string | null;
+  perNightText: string | null;
+  originalText: string | null;
+  rateInfo: string | null;
+  reviewScoreAria: string | null;
+  reviewScoreText: string | null;
+  reviewScoreLinkText: string | null;
+  starLabel: string | null;
+  distanceText: string | null;
+  thumbnailSrc: string | null;
+}
 
 export function classifyBookingDocument(
   title: string,
@@ -134,20 +151,81 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     throw new Error(`EMPTY_PROPERTY_CARD_SET: ${state.destination} offset ${state.offset}`);
   }
 
+  // Read every visible card in one browser round trip. Field-by-field Locator
+  // calls become expensive across large result pages, especially when an
+  // optional field is absent and waits for its timeout.
+  const cardSnapshots = await cards.evaluateAll((elements) => {
+    const text = (root: Element, selector: string): string | null =>
+      root.querySelector(selector)?.textContent ?? null;
+    const attr = (root: Element, selector: string, name: string): string | null =>
+      root.querySelector(selector)?.getAttribute(name) ?? null;
+    const firstText = (root: Element, selectors: string[]): string | null => {
+      for (const selector of selectors) {
+        const value = text(root, selector);
+        if (value) return value;
+      }
+      return null;
+    };
+    const firstAttr = (root: Element, selectors: string[], name: string): string | null => {
+      for (const selector of selectors) {
+        const value = attr(root, selector, name);
+        if (value) return value;
+      }
+      return null;
+    };
+
+    return elements.map((root) => ({
+      href: firstAttr(root, [
+        'a[data-testid="title-link"]',
+        'a[data-testid="property-card-desktop-single-image"]',
+        'a[href*="/hotel/"]',
+      ], 'href'),
+      propertyId: root.getAttribute('data-property-id'),
+      hotelName: firstText(root, [
+        '[data-testid="title"]',
+        '[data-testid="property-card-title"]',
+      ]),
+      cardText: root.textContent,
+      totalText: firstText(root, [
+        '[data-testid="price-and-discounted-price"]',
+        '[data-testid="price-for-x-nights"]',
+      ]),
+      perNightText: firstText(root, [
+        '[data-testid="price-per-night"]',
+        '[data-testid*="per-night"]',
+      ]),
+      originalText: firstText(root, [
+        '[data-testid="price-for-x-nights"] [data-testid*="original"]',
+        '[data-testid*="strikethrough"]',
+        '[data-testid*="original-price"]',
+      ]),
+      rateInfo: text(root, '[data-testid="availability-rate-information"]'),
+      reviewScoreAria: attr(root, '[data-testid="review-score"]', 'aria-label'),
+      reviewScoreText: text(root, '[data-testid="review-score"]'),
+      reviewScoreLinkText: text(root, '[data-testid="review-score-link"]'),
+      starLabel: attr(root, '[aria-label*="out of 5"]', 'aria-label'),
+      distanceText: text(root, '[data-testid="distance"]'),
+      thumbnailSrc: firstAttr(root, [
+        'img[data-testid="image"]',
+        'img[data-testid*="thumbnail"]',
+        'img',
+      ], 'src'),
+    }));
+  });
+
   let newOnPage = 0;
   let extractedOnPage = 0;
   let duplicateOnPage = 0;
   let filteredOnPage = 0;
 
-  for (let i = 0; i < cardCount; i++) {
+  for (const snapshot of cardSnapshots) {
     if (state.collectedCount >= state.maxResults) {
       log.info(`Reached maxResults ${state.maxResults}`);
       state.hasMore = false;
       return;
     }
 
-    const card = cards.nth(i);
-    const record = await extractProperty(card, state);
+    const record = extractPropertyFromSnapshot(snapshot, state);
 
     if (!record?.propertyId) continue;
     extractedOnPage++;
@@ -229,7 +307,12 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   log.info(`Enqueuing offset ${state.offset}`);
   await randomDelay(page, 1500, 3000);
 
-  await crawler.addRequests([{ url: nextUrl, userData: { state }, label: 'search' }]);
+  await crawler.addRequests([{
+    url: nextUrl,
+    uniqueKey: `browser:${state.destination}:${state.offset}`,
+    userData: { state },
+    label: 'search',
+  }]);
 
   await randomDelay(page, 1000, 2000);
 });
@@ -322,50 +405,38 @@ async function handleCookieConsent(page: Page): Promise<boolean> {
   return false;
 }
 
-async function extractProperty(card: Locator, state: SearchState): Promise<HotelRecord | null> {
+export function extractPropertyFromSnapshot(
+  snapshot: PropertyCardSnapshot,
+  state: SearchState,
+  scrapedAt = new Date().toISOString(),
+): HotelRecord | null {
   try {
-    const link = card.locator([
-      'a[data-testid="title-link"]',
-      'a[data-testid="property-card-desktop-single-image"]',
-      'a[href*="/hotel/"]',
-    ].join(',')).first();
-    const href = await link.getAttribute('href').catch(() => null);
+    const href = snapshot.href;
     const propertyUrl = normalizeBookingUrl(href);
 
     const propertyId =
-      (await safeAttr(card, 'data-property-id')) ||
+      cleanText(snapshot.propertyId) ||
       extractIdFromHref(href);
 
-    const hotelName = cleanText(await safeText(
-      card.locator('[data-testid="title"], [data-testid="property-card-title"]').first(),
-    ));
+    const hotelName = cleanText(snapshot.hotelName);
     if (!hotelName || !propertyUrl) return null;
 
-    const cardText = cleanText(await safeText(card)) ?? '';
+    const cardText = cleanText(snapshot.cardText) ?? '';
 
-    const totalText =
-      (await safeText(card.locator('[data-testid="price-and-discounted-price"]').first())) ||
-      (await safeText(card.locator('[data-testid="price-for-x-nights"]').first()));
-    const totalPrice = parseMoney(totalText);
+    const totalPrice = parseMoney(snapshot.totalText);
 
-    const perNightText = await safeText(
-      card.locator('[data-testid="price-per-night"], [data-testid*="per-night"]').first()
-    );
-    let pricePerNight = parseMoney(perNightText);
+    let pricePerNight = parseMoney(snapshot.perNightText);
 
     const nights = countNights(state.checkIn, state.checkOut);
     if ((!pricePerNight || pricePerNight < 20) && totalPrice) {
       pricePerNight = Math.round((totalPrice / nights) * 100) / 100;
     }
 
-    const originalText =
-      (await safeText(card.locator('[data-testid="price-for-x-nights"] [data-testid*="original"]').first())) ||
-      (await safeText(card.locator('[data-testid*="strikethrough"], [data-testid*="original-price"]').first()));
-    let originalPrice = parseMoney(originalText);
+    let originalPrice = parseMoney(snapshot.originalText);
 
     // Booking's rate-information block spells out "Original price US$X. Current price US$Y."
     // which is the most reliable source for the pre-discount total when shown.
-    const rateInfo = cleanText(await safeText(card.locator('[data-testid="availability-rate-information"]').first()));
+    const rateInfo = cleanText(snapshot.rateInfo);
     if (!originalPrice && rateInfo) {
       const origMatch = rateInfo.match(/Original price[^0-9]*([0-9][0-9,]*)/i);
       if (origMatch) originalPrice = parseMoney(origMatch[0]);
@@ -376,25 +447,19 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
       discountPercentage = Math.round((1 - totalPrice / originalPrice) * 100);
     }
 
-    const scoreEl = card.locator('[data-testid="review-score"]').first();
     const reviewScoreText =
-      (await safeAttr(scoreEl, 'aria-label')) ||
-      (await safeText(scoreEl)) ||
-      (await safeText(card.locator('[data-testid="review-score-link"]').first()));
+      snapshot.reviewScoreAria ||
+      snapshot.reviewScoreText ||
+      snapshot.reviewScoreLinkText;
     const guestReviewScore = parseReviewScore(reviewScoreText);
 
     const reviewCount = parseReviewCount(cardText);
 
-    const starRating = await extractStarRating(card);
+    const starRating = parseStarRating(snapshot.starLabel);
 
-    const distanceRaw = await safeText(card.locator('[data-testid="distance"]'));
-    const distanceFromCityCenter = cleanText(distanceRaw);
+    const distanceFromCityCenter = cleanText(snapshot.distanceText);
 
-    const thumbSrc = await safeAttr(
-      card.locator('img[data-testid="image"], img[data-testid*="thumbnail"]'),
-      'src'
-    ) || await safeAttr(card.locator('img').first(), 'src');
-    const thumbnailImageUrl = thumbSrc || null;
+    const thumbnailImageUrl = cleanText(snapshot.thumbnailSrc);
 
     // Card-level benefit signals are reliably exposed as text on the search card.
     const freeCancellation = /free cancellation/i.test(cardText);
@@ -426,19 +491,11 @@ async function extractProperty(card: Locator, state: SearchState): Promise<Hotel
       sustainabilityBadge,
       geniusDiscount,
       destination: state.destination,
-      scrapedAt: new Date().toISOString(),
+      scrapedAt,
     };
   } catch {
     return null;
   }
-}
-
-async function extractStarRating(card: Locator): Promise<number | null> {
-  // Booking exposes the official property class as an aria-label like "5 out of 5"
-  // on a span inside the card (review scores use "out of 10", so this is unambiguous).
-  const labelEl = card.locator('[aria-label*="out of 5"]').first();
-  const label = await safeAttr(labelEl, 'aria-label');
-  return parseStarRating(label);
 }
 
 export function extractIdFromHref(href: string | null): string | null {
@@ -530,14 +587,6 @@ function repairMojibake(value: string): string {
 
 function mojibakeScore(value: string): number {
   return (value.match(/[\u00c3\u00c2\u00e2]/g) ?? []).length;
-}
-
-async function safeText(loc: Locator): Promise<string | null> {
-  return loc.textContent({ timeout: 1000 }).catch(() => null);
-}
-
-async function safeAttr(loc: Locator, attr: string): Promise<string | null> {
-  return loc.getAttribute(attr, { timeout: 1000 }).catch(() => null);
 }
 
 async function randomDelay(_page: Page, min: number, max: number): Promise<void> {

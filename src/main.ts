@@ -3,6 +3,7 @@ import { PlaywrightCrawler } from 'crawlee';
 import type { ProxyConfiguration } from 'apify';
 import type { SearchState, ActorInput } from './types.js';
 import { router, buildSearchUrl, getScrapeState } from './routes.js';
+import { runHttpFastPath, type SearchRequest } from './http-fast-path.js';
 import {
   normalizeInput,
   requiresCloudProxy,
@@ -39,7 +40,7 @@ try {
   throw new Error(`Booking.com proxy configuration failed: ${message}`);
 }
 
-const initialRequests: Array<{ url: string; userData: { state: SearchState }; label: string }> = [];
+const initialRequests: SearchRequest[] = [];
 let searchChargeLimitReached = false;
 
 for (const destination of input.destinations) {
@@ -68,7 +69,12 @@ for (const destination of input.destinations) {
   };
 
   const url = buildSearchUrl(state);
-  initialRequests.push({ url, userData: { state }, label: 'search' });
+  initialRequests.push({
+    url,
+    uniqueKey: `http:${state.destination}:0`,
+    userData: { state },
+    label: 'search',
+  });
 }
 
 if (initialRequests.length === 0) {
@@ -79,6 +85,7 @@ if (searchChargeLimitReached) {
   console.warn(`Maximum cost per run reached after ${initialRequests.length} charged destination search(es); only those searches will run.`);
 }
 
+const httpResult = await runHttpFastPath(initialRequests, proxyConfiguration);
 let failedRequestCount = 0;
 
 const crawler = new PlaywrightCrawler({
@@ -141,7 +148,10 @@ const crawler = new PlaywrightCrawler({
 });
 
 try {
-  await crawler.run(initialRequests);
+  if (!httpResult.spendingLimitReached && httpResult.fallbackRequests.length > 0) {
+    console.info(`Using browser fallback for ${httpResult.fallbackRequests.length} unresolved Booking.com page(s).`);
+    await crawler.run(httpResult.fallbackRequests);
+  }
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err);
   console.error(`Crawler failed: ${message}`);
@@ -149,34 +159,37 @@ try {
 }
 
 const scrapeState = getScrapeState();
-const allSearchesCompletedEmpty = scrapeState.noResultDestinationCount === initialRequests.length
+const chargedHotelCount = httpResult.chargedHotelCount + scrapeState.chargedHotelCount;
+const noResultDestinationCount = httpResult.noResultDestinationCount + scrapeState.noResultDestinationCount;
+const spendingLimitReached = httpResult.spendingLimitReached || scrapeState.spendingLimitReached;
+const allSearchesCompletedEmpty = noResultDestinationCount === initialRequests.length
   && failedRequestCount === 0;
-if (scrapeState.chargedHotelCount === 0 && !allSearchesCompletedEmpty) {
+if (chargedHotelCount === 0 && !allSearchesCompletedEmpty) {
   await Actor.setValue('OUTPUT', {
     status: 'failed_no_results',
     results: 0,
     failedRequests: failedRequestCount,
     destinationsAttempted: initialRequests.length,
-    spendingLimitReached: scrapeState.spendingLimitReached,
+    spendingLimitReached,
   });
   throw new Error(`No Booking.com hotel records were charged and saved. Failed requests: ${failedRequestCount}.`);
 }
 
 if (allSearchesCompletedEmpty) {
-  console.info(`Booking.com returned no matching properties for ${scrapeState.noResultDestinationCount} destination search(es).`);
+  console.info(`Booking.com returned no matching properties for ${noResultDestinationCount} destination search(es).`);
 }
 
-if (scrapeState.spendingLimitReached) {
-  console.warn(`Booking.com crawl stopped at the user's spending limit after ${scrapeState.chargedHotelCount} charged hotel records.`);
+if (spendingLimitReached) {
+  console.warn(`Booking.com crawl stopped at the user's spending limit after ${chargedHotelCount} charged hotel records.`);
 }
 
 await Actor.setValue('OUTPUT', {
   status: allSearchesCompletedEmpty ? 'succeeded_no_matches' : 'succeeded',
-  results: scrapeState.chargedHotelCount,
+  results: chargedHotelCount,
   failedRequests: failedRequestCount,
   destinationsAttempted: initialRequests.length,
-  noResultDestinations: scrapeState.noResultDestinationCount,
-  spendingLimitReached: scrapeState.spendingLimitReached,
+  noResultDestinations: noResultDestinationCount,
+  spendingLimitReached,
 });
 
 await Actor.exit();
