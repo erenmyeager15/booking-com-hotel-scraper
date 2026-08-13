@@ -1,5 +1,33 @@
 # Booking.com Hotel Scraper Roadmap
 
+## Phase 4: Repriced to $2.00 / 1,000 (2026-08-13)
+
+The owner changed the Console price from **$0.004 to $0.002 per `hotel-scraped`**
+(`$2.00 / 1,000`), verified live via API at `2026-08-13T07:04:12Z`. The
+`apify-actor-start` event stays at the Apify default **$0.00005** and platform usage is
+**not** passed to users. `.actor/actor.json` was updated to the same figures so a later
+`apify push` cannot revert the Console edit.
+
+Against the measured datacenter cost of **$0.00013 per property**, this is a **92%
+margin**, about **$0.00147 profit per result**, and break-even at roughly **2 results
+per run**. The earlier warning that sub-$2 pricing was loss-making applied to the
+residential proxy path and no longer holds.
+
+Positioning rationale: $2.00 is the category's mainstream anchor, matching the
+long-established `voyager/fast-booking-scraper` and `unfenced-group` at $1.99, while
+undercutting `agenscrape` at $3, `noraview` at $5, and `juryless_lens` at $7. The $1.50
+bracket was deliberately avoided because `solidcode` (87 users) and `makework36` (37
+users) already compete there and it costs another 25% of revenue for little perceived
+gain. Note that demand in this category does not track price: `noraview` charges $5 and
+has 257 users, so price is a weak lever and $1.50 is kept in reserve as a future
+promotional move rather than spent now.
+
+The Store title now surfaces the price as
+`Booking.com Hotel Scraper - $2/1k, Prices & Availability` (56 chars), the same tactic
+used on Blinkit and JioMart. `seoTitle` deliberately omits the price so search metadata
+cannot go stale after a future change. The near-zero start fee is now advertised in the
+README as a differentiator, since several competitors charge $0.01 to $0.10 per run.
+
 ## Phase 3: Measured run economics (2026-08-12)
 
 Two paid verification runs on build **1.0.32/1.0.33**, London, 2 adults, 1 room,
@@ -18,7 +46,9 @@ served this datacenter pool without blocking. Cost is now dominated by **compute
 
 Margins at measured datacenter cost, net of Apify's 20% commission: **93%** at $4/1k,
 **87%** at $2/1k, **82%** at $1.50/1k, **73%** at $1/1k. At residential cost, $1.50/1k
-is **loss-making** at -11%.
+is **loss-making** at -11%. These figures used the probe's $0.000216 per property; the
+shipped datacenter default later measured **$0.00013**, which lifts the $2/1k margin to
+**92%**.
 
 ### Datacenter-first proxy with residential fallback (shipped)
 
@@ -52,7 +82,8 @@ search charges happen once, before the tier loop, so a retry cannot double-charg
 
 - **Status**: Published; profitability not yet verified.
 - Heavy browser assets (`image`, `media`, `font`, and `stylesheet`) are blocked.
-- The live pay-per-event price is `$0.004` per hotel scraped (`$4.00 / 1,000`).
+- The live pay-per-event price was `$0.004` per hotel scraped (`$4.00 / 1,000`).
+  Superseded on 2026-08-13; see Phase 4.
 - The default and minimum memory were reduced to `1024 MB`, with `2048 MB` still available for larger batches. Browser concurrency is capped at one page to keep the 1 GB default stable.
 - Residential proxy use remains in the documented/default example path.
 - The previous estimate of `$1.00-$1.50 / 1,000` backend cost is unverified and must not be used as a profitability claim. The last observed Apify estimate before this release was `$28.86 / 1,000 results`.
@@ -70,13 +101,17 @@ search charges happen once, before the tier loop, so a retry cannot double-charg
 - Request retries and session rotations are bounded to two each, while explicit challenge detection prevents long blocked-page waits.
 - Successful and unsuccessful runs write a machine-readable `OUTPUT` summary.
 - Treat `$4.00 / 1,000` as a controlled live experiment, not a proven sustainable price.
+  Superseded on 2026-08-13: the price is now `$2.00 / 1,000` and cost per property is
+  measured at `$0.00013`, so profitability is no longer unproven.
 - Track paying users, results, success rate, cost per 1,000 results, revenue, profit, and margin for 24-72 hours.
-- Keep the price only if measured cost per 1,000 stays below `$4.00` with an adequate safety margin.
+- Keep the price only if measured cost per 1,000 stays well below it. Measured cost is
+  now `$0.13 / 1,000` on datacenter proxy against `$2.00 / 1,000` of revenue.
 - Roll back the price or pause promotion if measured cost remains above revenue.
 - Do not run extra paid smoke tests unless a warning, user report, or unexpected success-rate drop requires one.
 
 ### 2026-08-02 pricing and architecture review
 
+- Superseded on 2026-08-13 by the $0.002/hotel price in Phase 4.
 - Keep the current **$0.004/hotel + $0.00005/start** configuration while the
   active-listing observation window is running. The price is near current Store
   competitors, but profitable paid-run economics are not yet proven.

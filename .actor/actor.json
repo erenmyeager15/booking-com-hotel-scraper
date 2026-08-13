@@ -1,7 +1,7 @@
 {
   "actorSpecification": 1,
   "name": "booking-com-hotel-scraper",
-  "title": "Booking.com Hotel Scraper: Prices & Availability",
+  "title": "Booking.com Hotel Scraper - $2/1k, Prices & Availability",
   "description": "Scrape public Booking.com accommodation search results with hotel names, prices, guest scores, review counts, cancellation signals, property IDs, images, and URLs.",
   "version": "1.0",
   "buildTag": "latest",
@@ -74,7 +74,7 @@
         "hotel-scraped": {
           "eventTitle": "Hotel scraped",
           "eventDescription": "Charged once for each clean Booking.com hotel record saved to the dataset.",
-          "eventPriceUsd": 0.004,
+          "eventPriceUsd": 0.002,
           "isPrimaryEvent": true,
           "isOneTimeEvent": false
         }

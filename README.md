@@ -56,9 +56,11 @@ This Actor uses Apify Pay Per Event pricing. The live Store configuration charge
 | Event | Price | When charged |
 | --- | ---: | --- |
 | `apify-actor-start` | $0.00005 per GB | When the run starts, minimum one event |
-| `hotel-scraped` | $0.004 | For each clean hotel record saved |
+| `hotel-scraped` | $0.002 | For each clean hotel record saved |
 
-The current live pricing does not expose a separate per-destination search event. Hotel records are saved through the `hotel-scraped` event, and the run stops when the user's maximum cost limit is reached.
+That works out to **$2.00 per 1,000 hotels**, and there is effectively **no per-run fee**: the start event is $0.00005, not the $0.01 to $0.10 per-run charge several comparable Booking.com scrapers apply. Small test runs therefore cost almost nothing, and you are not penalised for checking output before scaling up.
+
+The current live pricing does not expose a separate per-destination search event. Hotel records are saved through the `hotel-scraped` event, and the run stops when the user's maximum cost limit is reached. Platform usage is **not** passed on to you; it is covered by the price above.
 
 Cost-control tips:
 
