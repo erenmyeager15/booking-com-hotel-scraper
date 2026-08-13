@@ -20,6 +20,17 @@ Margins at measured datacenter cost, net of Apify's 20% commission: **93%** at $
 **87%** at $2/1k, **82%** at $1.50/1k, **73%** at $1/1k. At residential cost, $1.50/1k
 is **loss-making** at -11%.
 
+### Datacenter-first proxy with residential fallback (shipped)
+
+The default proxy configuration no longer pins `RESIDENTIAL`. When no group is
+requested, the run tries Apify's datacenter pool first and only retries on residential
+if the cheap tier collected nothing, so a datacenter block costs money instead of
+costing the user their results. Explicit group choices and custom `proxyUrls` are never
+overridden, and a requested country carries onto both tiers. Each tier gets fresh
+per-destination state and its own crawler, and `resetNoResultDestinations()` prevents a
+blocked first tier from being misreported as a genuinely empty search. Destination
+search charges happen once, before the tier loop, so a retry cannot double-charge.
+
 ### Open issues found during verification
 
 - **Pagination does not advance.** With `maxResults: 50` the browser logged

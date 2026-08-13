@@ -1,9 +1,13 @@
 import type { ActorInput, NormalizedInput, ProxyConfigInput } from './types.js';
 
+// Datacenter proxy is the default because it is not billed per gigabyte. A measured
+// London run cost $0.00540 on the datacenter pool versus $0.03336 on residential, where
+// residential transfer alone was 90% of the bill. Residential is kept as an automatic
+// fallback tier for when Booking.com challenges the datacenter pool.
 const DEFAULT_PROXY_CONFIGURATION = {
   useApifyProxy: true,
-  apifyProxyGroups: ['RESIDENTIAL'],
 };
+const RESIDENTIAL_GROUPS = ['RESIDENTIAL'];
 const DEFAULT_CHECK_IN_OFFSET_DAYS = 30;
 
 const ALLOWED_CURRENCIES = new Set([
@@ -63,10 +67,7 @@ export function normalizeInput(input: ActorInput = {}, today = new Date()): Norm
 
 export function normalizeProxyConfiguration(value: unknown): ProxyConfigInput {
   if (value === undefined || value === null) {
-    return {
-      useApifyProxy: DEFAULT_PROXY_CONFIGURATION.useApifyProxy,
-      apifyProxyGroups: [...DEFAULT_PROXY_CONFIGURATION.apifyProxyGroups],
-    };
+    return { useApifyProxy: DEFAULT_PROXY_CONFIGURATION.useApifyProxy };
   }
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('proxyConfiguration must be a proxy configuration object.');
@@ -88,9 +89,48 @@ export function normalizeProxyConfiguration(value: unknown): ProxyConfigInput {
   const country = cleanText(raw.apifyProxyCountry).toUpperCase();
   return {
     useApifyProxy: true,
-    apifyProxyGroups: groups.length > 0 ? groups : [...DEFAULT_PROXY_CONFIGURATION.apifyProxyGroups],
+    // No groups means "let the tier logic choose", which starts on the cheaper
+    // datacenter pool. An explicit group list is always honoured as-is.
+    ...(groups.length > 0 ? { apifyProxyGroups: groups } : {}),
     ...(country ? { apifyProxyCountry: country } : {}),
   };
+}
+
+export interface ProxyTier {
+  label: string;
+  options: ReturnType<typeof toProxyConfigurationOptions>;
+}
+
+/**
+ * Builds the proxy tiers to try in order. When the caller did not pin a specific
+ * Apify proxy group, this returns the cheap datacenter pool first and residential
+ * as a fallback, so a datacenter block degrades into a costlier run instead of a
+ * failed one. Custom proxy URLs and explicit group choices are never overridden.
+ */
+export function buildProxyTiers(value: ProxyConfigInput): ProxyTier[] {
+  if (value.proxyUrls?.length) {
+    return [{ label: 'custom proxy URLs', options: toProxyConfigurationOptions(value) }];
+  }
+  if (value.useApifyProxy === false) {
+    return [{ label: 'no proxy', options: toProxyConfigurationOptions(value) }];
+  }
+  if (value.apifyProxyGroups?.length) {
+    return [{
+      label: `requested proxy groups (${value.apifyProxyGroups.join(', ')})`,
+      options: toProxyConfigurationOptions(value),
+    }];
+  }
+
+  return [
+    {
+      label: 'datacenter proxy',
+      options: toProxyConfigurationOptions(value),
+    },
+    {
+      label: 'residential proxy fallback',
+      options: toProxyConfigurationOptions({ ...value, apifyProxyGroups: [...RESIDENTIAL_GROUPS] }),
+    },
+  ];
 }
 
 export function requiresCloudProxy(value: ProxyConfigInput, isCloudRun: boolean): boolean {
@@ -104,7 +144,9 @@ export function toProxyConfigurationOptions(value: ProxyConfigInput) {
   if (value.useApifyProxy === false) return { useApifyProxy: false };
   return {
     useApifyProxy: true,
-    groups: value.apifyProxyGroups ? [...value.apifyProxyGroups] : ['RESIDENTIAL'],
+    // Omitting groups lets Apify serve its datacenter pool, which carries no
+    // per-gigabyte transfer charge.
+    ...(value.apifyProxyGroups?.length ? { groups: [...value.apifyProxyGroups] } : {}),
     ...(value.apifyProxyCountry ? { countryCode: value.apifyProxyCountry } : {}),
   };
 }

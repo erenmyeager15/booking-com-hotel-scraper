@@ -84,6 +84,16 @@ export function getScrapeState() {
   };
 }
 
+/**
+ * Clears the per-attempt "no results" set before another proxy tier is tried, so a
+ * destination that only looked empty because the previous tier was blocked is not
+ * reported as genuinely empty. Charge counters stay cumulative because they reflect
+ * real charges already made.
+ */
+export function resetNoResultDestinations(): void {
+  noResultDestinations.clear();
+}
+
 router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   const state = request.userData.state as SearchState;
 

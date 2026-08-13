@@ -82,11 +82,10 @@
     "proxyConfiguration": {
       "title": "Proxy Configuration",
       "type": "object",
-      "description": "Proxy settings for scraping. Apify Residential or a suitable custom proxy is required for cloud runs because Booking.com challenges direct Apify cloud traffic.",
+      "description": "Proxy settings for scraping. Apify Proxy or a suitable custom proxy is required for cloud runs because Booking.com challenges direct Apify cloud traffic. Leave the groups empty to use the default datacenter pool, which costs far less; if Booking.com blocks it the run retries automatically on residential. Pin RESIDENTIAL only if you want to skip that cheaper first attempt.",
       "editor": "proxy",
       "default": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+        "useApifyProxy": true
       }
     }
   },

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildProxyTiers,
   normalizeInput,
   normalizeProxyConfiguration,
   requiresCloudProxy,
@@ -43,7 +44,53 @@ test('normalizes Booking.com input and clamps limits', () => {
   assert.equal(input.currency, 'INR');
   assert.deepEqual(input.proxyConfiguration, {
     useApifyProxy: true,
+  });
+});
+
+test('defaults to datacenter proxy first with a residential fallback tier', () => {
+  const input = normalizeInput({
+    destinations: ['London, United Kingdom'],
+    checkIn: '2026-08-15',
+    checkOut: '2026-08-16',
+  }, fixedToday);
+
+  // No group is pinned, so Apify serves the datacenter pool, which is not billed
+  // per gigabyte. Residential transfer was 90% of a measured run's cost.
+  assert.deepEqual(input.proxyConfiguration, { useApifyProxy: true });
+
+  const tiers = buildProxyTiers(input.proxyConfiguration);
+  assert.equal(tiers.length, 2);
+  assert.deepEqual(tiers[0].options, { useApifyProxy: true });
+  assert.deepEqual(tiers[1].options, { useApifyProxy: true, groups: ['RESIDENTIAL'] });
+});
+
+test('never overrides an explicitly requested proxy group or custom proxy URLs', () => {
+  const pinned = buildProxyTiers(normalizeProxyConfiguration({
+    useApifyProxy: true,
     apifyProxyGroups: ['RESIDENTIAL'],
+  }));
+  assert.equal(pinned.length, 1);
+  assert.deepEqual(pinned[0].options, { useApifyProxy: true, groups: ['RESIDENTIAL'] });
+
+  const custom = buildProxyTiers(normalizeProxyConfiguration({
+    useApifyProxy: false,
+    proxyUrls: ['http://proxy.example:8000'],
+  }));
+  assert.equal(custom.length, 1);
+  assert.deepEqual(custom[0].options, { proxyUrls: ['http://proxy.example:8000'] });
+});
+
+test('carries the requested country onto both proxy tiers', () => {
+  const tiers = buildProxyTiers(normalizeProxyConfiguration({
+    useApifyProxy: true,
+    apifyProxyCountry: 'gb',
+  }));
+  assert.equal(tiers.length, 2);
+  assert.deepEqual(tiers[0].options, { useApifyProxy: true, countryCode: 'GB' });
+  assert.deepEqual(tiers[1].options, {
+    useApifyProxy: true,
+    groups: ['RESIDENTIAL'],
+    countryCode: 'GB',
   });
 });
 

@@ -7,7 +7,6 @@
   "maxResults": 25,
   "currency": "USD",
   "proxyConfiguration": {
-    "useApifyProxy": true,
-    "apifyProxyGroups": ["RESIDENTIAL"]
+    "useApifyProxy": true
   }
 }

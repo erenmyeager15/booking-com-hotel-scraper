@@ -2,7 +2,7 @@
 
 Scrape Booking.com hotel and accommodation search results for travel market research, price monitoring, and competitor analysis. The actor searches one or more destinations for a date range, extracts clean property records, deduplicates by Booking.com property ID, and saves the results to an Apify Dataset. Export to JSON, CSV, Excel, or HTML, or pull via the Apify API. No login and no API key required.
 
-For the first run, start with one destination, the default `maxResults: 25`, and the recommended residential proxy enabled. Dates are optional; when omitted, the Actor searches a one-night stay beginning 30 days after the run date. A Booking.com results page costs the same to fetch whether you keep 1 property or 25, so `maxResults: 25` is the best value per result and is the recommended starting point.
+For the first run, start with one destination, the default `maxResults: 25`, and Apify Proxy enabled. Dates are optional; when omitted, the Actor searches a one-night stay beginning 30 days after the run date. A Booking.com results page costs the same to fetch whether you keep 1 property or 25, so `maxResults: 25` is the best value per result and is the recommended starting point.
 
 Each clean hotel record is saved through the `hotel-scraped` pay-per-event flow, so output is only kept when the result event charge is accepted. The actor skips incomplete cards that do not expose a property name and Booking.com hotel URL, so the dataset avoids empty placeholder rows.
 
@@ -12,7 +12,7 @@ Each clean hotel record is saved through the `hotel-scraped` pay-per-event flow,
 - Explicit or automatically generated future check-in and check-out dates
 - Adults, rooms, currency, review score, and property type inputs
 - Pagination up to 500 properties per destination
-- Residential and custom proxy support for Apify cloud runs
+- Datacenter-first proxy with automatic residential fallback, plus custom proxy support
 - Bounded retry/session handling that avoids long blocked-page loops
 - Machine-readable run summary in the `OUTPUT` key-value-store record
 - Null fallbacks for fields that Booking.com does not expose on every search card
@@ -66,7 +66,7 @@ Cost-control tips:
 - Use a one-night future date range for your first test.
 - Keep the default `maxResults: 25` for the first test run: it is one results page, the same fetch cost as a single result, and gives the lowest cost per property.
 - Leave `minReviewScore` at 0 for the broadest first test; add 7 or higher after output looks right.
-- Keep Residential proxy enabled for cloud runs. Direct Apify cloud traffic is rejected early because Booking.com presents a verification challenge.
+- Keep Apify Proxy enabled for cloud runs. Runs start on the cheaper datacenter pool and retry automatically on residential if Booking.com blocks it. Direct Apify cloud traffic is rejected early because Booking.com presents a verification challenge.
 - Avoid `maxResults: 1`. One search page is fetched either way, so a single-result run pays a full page of proxy transfer for one row. Values of 25 amortize that fetch across many properties.
 - Increase destinations and result limits only after a small run returns the expected data.
 - Runtime memory defaults to 1 GB and can be raised to 2 GB for larger batches.
@@ -84,7 +84,7 @@ Cost-control tips:
 | `minReviewScore` | number | no | `0` | Optional guest review score threshold. |
 | `maxResults` | integer | no | `25` | Maximum properties per destination, up to 500. The default is the measured yield of one results page and the best cost per property. Values above 25 per destination may not return more properties today; add destinations instead. |
 | `currency` | string | no | `USD` | Display currency for prices. |
-| `proxyConfiguration` | object | no | Residential | Apify proxy settings. Residential proxy is recommended. |
+| `proxyConfiguration` | object | no | Apify Proxy | Apify proxy settings. Leave groups empty to start on the cheaper datacenter pool with an automatic residential retry. |
 
 ## Input Example
 
@@ -97,8 +97,7 @@ Cost-control tips:
   "maxResults": 25,
   "currency": "USD",
   "proxyConfiguration": {
-    "useApifyProxy": true,
-    "apifyProxyGroups": ["RESIDENTIAL"]
+    "useApifyProxy": true
   }
 }
 ```
@@ -150,7 +149,7 @@ The following row came from a successful one-result London run on July 29, 2026.
 
 - Runtime: Node.js 20 on `apify/actor-node-playwright-chrome:20`
 - Scraping engine: Crawlee PlaywrightCrawler (Heavily Optimized)
-- Proxy: Apify Residential by default, or a suitable custom proxy; unproxied Apify cloud runs fail early
+- Proxy: Apify datacenter pool first with an automatic residential retry, or a suitable custom proxy; unproxied Apify cloud runs fail early
 - Retry policy: up to two fast retries/session rotations for blocked responses
 - Browser safety: one concurrent page, 30 requests per minute, 45-second navigation timeout, and pagination capped at 40 pages per destination. Media, fonts, styles, and common analytics requests are blocked to reduce transfer and memory use.
 - Storage: Apify Dataset
