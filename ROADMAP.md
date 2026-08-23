@@ -41,10 +41,13 @@ Live one-result detailed proofs now supersede that pending note:
   its 1,024 MB allocation rather than risk a 512 MB container.
 - The margin-safe event design is deployed as build **1.0.43**
   (`CKAA2grtF6bo4xLYs`) and implemented in Git commit **6b21b1f**. The cloud build
-  succeeded, but its two new pricing events remain inactive until the Console change
-  is explicitly saved.
+  succeeded and safely skips the new events during Apify's pricing-notice window.
+- Public task `SPm7gNfi8JG9EMaGa` now provides the detailed one-hotel London example.
+  Its build 1.0.43 run `smfSsrIqKaYXRWggB` succeeded in 61s with 1 result, 2/2
+  requests completed, and about **$0.004** usage. The public page is
+  `https://apify.com/fascinating_lentil/booking-com-hotel-scraper/examples/hotels-in-london-booking-com`.
 
-The product design keeps fast rows at **$0.002** and proposes a competitive
+The product design keeps fast rows at **$0.002** and schedules a competitive
 **$0.005 detailed row**, plus a **$0.002 one-time detailed-mode setup event**. The
 setup charge covers the browser/session startup that dominates one-result runs while
 keeping bulk pricing effectively at $5/1,000. At one result, creator revenue after
@@ -55,12 +58,12 @@ price. Explicit Apify Residential input is rejected for detailed mode; fast mode
 retains its bounded residential fallback. The code safely skips new events until they
 become active.
 
-The proposed `detailed-hotel-scraped` and `detailed-run-started` events are **not yet
-active in live monetization**. Live Actor pricing remains `hotel-scraped` at **$0.002**
-plus the **$0.00005** Actor start event. Do not claim the $5 tier is published until
-the Console change is saved. The public Store title, short description, and detailed
-example also remain pending publication; the verified public title is still
-`Booking.com Hotel Scraper - $2/1k, Prices & Availability`.
+The `detailed-hotel-scraped` and `detailed-run-started` events were saved in Apify
+Console on **2026-08-24** and are scheduled to become effective on **2026-09-06 at
+19:08 UTC** after Apify's notice period. Until then, live pricing remains
+`hotel-scraped` at **$0.002** plus the **$0.00005** Actor start event. The public Store
+title is now `Booking.com Scraper - $2/1k, Rooms & Live Prices`; its description and
+custom SEO are published, and the detailed London example above is live and verified.
 
 ## Phase 4: Repriced to $2.00 / 1,000 (2026-08-13)
 
