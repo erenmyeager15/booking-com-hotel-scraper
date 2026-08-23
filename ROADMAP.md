@@ -39,6 +39,10 @@ Live one-result detailed proofs now supersede that pending note:
   correct USD labels, and about **$0.004** settled platform usage. Memory averaged
   542.5 MB and peaked at 740.2 MB, confirming that the Playwright path should retain
   its 1,024 MB allocation rather than risk a 512 MB container.
+- The margin-safe event design is deployed as build **1.0.43**
+  (`CKAA2grtF6bo4xLYs`) and implemented in Git commit **6b21b1f**. The cloud build
+  succeeded, but its two new pricing events remain inactive until the Console change
+  is explicitly saved.
 
 The product design keeps fast rows at **$0.002** and proposes a competitive
 **$0.005 detailed row**, plus a **$0.002 one-time detailed-mode setup event**. The
