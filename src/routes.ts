@@ -1,11 +1,13 @@
 import { createPlaywrightRouter, SessionError } from 'crawlee';
 import { Actor } from 'apify';
 import type { Page } from 'playwright';
-import type { HotelRecord, SearchState } from './types.js';
+import type { DetailRequestData, HotelRecord, SearchState } from './types.js';
 import { PROPERTY_TYPE_HT_IDS } from './types.js';
+import { enrichHotelRecord, extractBookingDetails } from './details.js';
 
 export const router = createPlaywrightRouter();
 const HOTEL_SCRAPED_EVENT = 'hotel-scraped';
+const DETAILED_HOTEL_SCRAPED_EVENT = 'detailed-hotel-scraped';
 export const MAX_PAGES_PER_DESTINATION = 40;
 
 export type BookingDocumentState = 'normal' | 'blocked' | 'no-results';
@@ -57,12 +59,13 @@ export function decidePageProgress(input: {
   filteredCount: number;
   offset: number;
   pageSize: number;
+  hasNextPage?: boolean;
 }): PageProgressAction {
   if (input.extractedCount === 0) return 'retry';
 
   const currentPage = Math.floor(input.offset / input.pageSize) + 1;
   if (currentPage >= MAX_PAGES_PER_DESTINATION) return 'stop';
-  if (input.cardCount < input.pageSize) return 'stop';
+  if (input.cardCount < input.pageSize && !input.hasNextPage) return 'stop';
 
   const onlyDuplicates = input.newCount === 0
     && input.duplicateCount > 0
@@ -75,6 +78,7 @@ export function decidePageProgress(input: {
 let chargedHotelCount = 0;
 let spendingLimitReached = false;
 const noResultDestinations = new Set<string>();
+const queuedDetailKeys = new Set<string>();
 
 export function getScrapeState() {
   return {
@@ -93,6 +97,55 @@ export function getScrapeState() {
 export function resetNoResultDestinations(): void {
   noResultDestinations.clear();
 }
+
+router.addHandler('detail', async ({ page, request, crawler, session, log }) => {
+  const { record, state } = request.userData as DetailRequestData;
+
+  if (spendingLimitReached) {
+    request.noRetry = true;
+    return;
+  }
+
+  if (await inspectPropertyPageAfterChallengeGrace(page) === 'blocked') {
+    session?.retire();
+    throw new SessionError(`BOOKING_DETAIL_BLOCKED: ${record.propertyId}`);
+  }
+
+  await handleCookieConsent(page);
+  if (await inspectBookingPage(page) === 'blocked') {
+    session?.retire();
+    throw new SessionError(`BOOKING_DETAIL_BLOCKED_AFTER_INTERACTION: ${record.propertyId}`);
+  }
+
+  await page.waitForSelector([
+    'h2[data-testid="title"]',
+    'h1[data-testid="title"]',
+    '#hp_hotel_name',
+    '#hprt-table',
+  ].join(','), { timeout: 15000 }).catch(() => null);
+
+  const snapshot = await extractBookingDetails(page, state.maxImages ?? 10);
+  const enrichedRecord: HotelRecord = {
+    ...enrichHotelRecord(record, snapshot, state.maxImages ?? 10),
+    billingTier: 'detailed-datacenter',
+  };
+  const chargeResult = await Actor.pushData(enrichedRecord, detailedResultEvent());
+  const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
+
+  if (!recordWasSaved) {
+    spendingLimitReached = true;
+    await crawler.autoscaledPool?.abort();
+    return;
+  }
+
+  chargedHotelCount++;
+  log.info(`Saved detailed property ${record.hotelName ?? record.propertyId} with ${enrichedRecord.roomOptions.length} room option(s).`);
+
+  if (chargeResult.eventChargeLimitReached) {
+    spendingLimitReached = true;
+    await crawler.autoscaledPool?.abort();
+  }
+});
 
 router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   const state = request.userData.state as SearchState;
@@ -253,6 +306,27 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     }
 
     state.seenIds.push(record.propertyId);
+
+    if (state.scrapeDetails) {
+      const detailKey = buildDetailKey(record, state);
+      if (queuedDetailKeys.has(detailKey)) {
+        duplicateOnPage++;
+        continue;
+      }
+
+      queuedDetailKeys.add(detailKey);
+      state.collectedCount++;
+      newOnPage++;
+      await crawler.addRequests([{
+        url: buildPropertyDetailUrl(record, state),
+        uniqueKey: `detail:${detailKey}`,
+        label: 'detail',
+        userData: { record, state } satisfies DetailRequestData,
+      }]);
+      log.info(`[${state.collectedCount}/${state.maxResults}] queued detailed page for ${record.hotelName}`);
+      continue;
+    }
+
     const chargeResult = await Actor.pushData(record, HOTEL_SCRAPED_EVENT);
     const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
     if (!recordWasSaved) {
@@ -289,6 +363,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     return;
   }
 
+  const nextPageUrl = await findNextPageUrl(page, state);
   const progressAction = decidePageProgress({
     cardCount,
     extractedCount: extractedOnPage,
@@ -297,6 +372,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     filteredCount: filteredOnPage,
     offset: state.offset,
     pageSize: state.pageSize,
+    hasNextPage: Boolean(nextPageUrl),
   });
 
   if (progressAction === 'retry') {
@@ -312,7 +388,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   }
 
   state.offset += state.pageSize;
-  const nextUrl = buildSearchUrl(state);
+  const nextUrl = nextPageUrl ?? buildSearchUrl(state, page.url());
 
   log.info(`Enqueuing offset ${state.offset}`);
   await randomDelay(page, 1500, 3000);
@@ -340,7 +416,16 @@ function propertyCardSelector(): string {
   ].join(',');
 }
 
-export function buildSearchUrl(state: SearchState): string {
+export function buildSearchUrl(state: SearchState, currentUrl?: string): string {
+  const preservedUrl = currentUrl ?? state.searchUrl;
+  if (preservedUrl) {
+    const url = new URL(preservedUrl);
+    url.hash = '';
+    url.searchParams.set('offset', String(state.offset));
+    if (!url.searchParams.has('rows')) url.searchParams.set('rows', String(state.pageSize));
+    return url.toString();
+  }
+
   const base = 'https://www.booking.com/searchresults.html';
   const params = new URLSearchParams();
 
@@ -349,20 +434,57 @@ export function buildSearchUrl(state: SearchState): string {
   params.set('checkout', state.checkOut);
   params.set('group_adults', String(state.adults));
   params.set('no_rooms', String(state.rooms));
+  const childrenAges = state.childrenAges ?? [];
+  params.set('group_children', String(childrenAges.length));
+  for (const age of childrenAges) params.append('age', String(age));
   params.set('offset', String(state.offset));
   params.set('rows', String(state.pageSize));
   params.set('selected_currency', state.currency);
+  params.set('lang', state.language ?? 'en-us');
 
-  if (state.propertyTypes.length > 0) {
-    const filters = state.propertyTypes
+  const filters = state.propertyTypes
       .map((t) => PROPERTY_TYPE_HT_IDS[t])
       .filter(Boolean);
-    if (filters.length > 0) {
-      params.set('nflt', filters.join(';'));
-    }
+  for (const star of state.stars ?? []) filters.push(`class=${star}`);
+  if ((state.minPrice ?? null) !== null || (state.maxPrice ?? null) !== null) {
+    filters.push(`price=${state.currency}-${state.minPrice ?? 0}-${state.maxPrice ?? 999999999}-1`);
+  }
+  if (state.minReviewScore >= 6) {
+    filters.push(`review_score=${Math.floor(state.minReviewScore) * 10}`);
+  }
+  if (filters.length > 0) {
+    params.set('nflt', filters.join(';'));
   }
 
+  const sortOrder: string | undefined = ({
+    priceLowToHigh: 'price',
+    reviewScore: 'bayesian_review_score',
+    distance: 'distance_from_search',
+  } as Partial<Record<NonNullable<SearchState['sortBy']>, string>>)[state.sortBy ?? 'popularity'];
+  if (sortOrder) params.set('order', sortOrder);
+
   return `${base}?${params.toString()}`;
+}
+
+async function findNextPageUrl(page: Page, state: SearchState): Promise<string | null> {
+  const href = await page.locator([
+    '[data-testid="pagination"] a[aria-label="Next page"]',
+    '[data-testid="pagination"] a[aria-label*="Next"]',
+    'a[aria-label="Next page"]',
+    'a.paging-next',
+  ].join(',')).first().getAttribute('href').catch(() => null);
+  if (!href) return null;
+
+  try {
+    const url = new URL(href, page.url());
+    url.hash = '';
+    if (!url.searchParams.has('offset')) {
+      url.searchParams.set('offset', String(state.offset + state.pageSize));
+    }
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 async function inspectBookingPage(page: Page): Promise<BookingDocumentState> {
@@ -389,6 +511,19 @@ async function inspectBookingPageAfterChallengeGrace(page: Page): Promise<Bookin
   // Booking can briefly show its challenge shell before a valid residential
   // session resolves and renders property cards. Do not retire that IP too early.
   await page.waitForSelector(propertyCardSelector(), { timeout: 8000 }).catch(() => null);
+  return inspectBookingPage(page);
+}
+
+async function inspectPropertyPageAfterChallengeGrace(page: Page): Promise<BookingDocumentState> {
+  const initialState = await inspectBookingPage(page);
+  if (initialState !== 'blocked') return initialState;
+
+  await page.waitForSelector([
+    'h2[data-testid="title"]',
+    'h1[data-testid="title"]',
+    '#hp_hotel_name',
+    '#hprt-table',
+  ].join(','), { timeout: 8000 }).catch(() => null);
   return inspectBookingPage(page);
 }
 
@@ -500,12 +635,78 @@ export function extractPropertyFromSnapshot(
       thumbnailImageUrl,
       sustainabilityBadge,
       geniusDiscount,
+      available: true,
+      availabilityStatus: 'available',
+      checkIn: state.checkIn,
+      checkOut: state.checkOut,
+      nights,
+      adults: state.adults,
+      children: state.childrenAges?.length ?? 0,
+      rooms: state.rooms,
+      scrapeMode: 'fast',
+      billingTier: 'fast',
+      sourceUrl: state.searchUrl ?? buildSearchUrl({ ...state, offset: 0 }),
+      address: null,
+      description: null,
+      latitude: null,
+      longitude: null,
+      checkInTime: null,
+      checkOutTime: null,
+      facilities: [],
+      imageUrls: thumbnailImageUrl ? [thumbnailImageUrl] : [],
+      roomOptions: [],
+      surroundings: [],
       destination: state.destination,
       scrapedAt,
     };
   } catch {
     return null;
   }
+}
+
+export function buildPropertyDetailUrl(record: HotelRecord, state: SearchState): string {
+  const url = new URL(record.propertyUrl ?? 'https://www.booking.com/');
+  url.searchParams.set('checkin', state.checkIn);
+  url.searchParams.set('checkout', state.checkOut);
+  url.searchParams.set('group_adults', String(state.adults));
+  url.searchParams.set('no_rooms', String(state.rooms));
+  url.searchParams.set('group_children', String(state.childrenAges?.length ?? 0));
+  url.searchParams.delete('age');
+  for (const age of state.childrenAges ?? []) url.searchParams.append('age', String(age));
+  url.searchParams.set('selected_currency', state.currency);
+  url.searchParams.set('lang', state.language ?? 'en-us');
+  return url.toString();
+}
+
+function buildDetailKey(record: HotelRecord, state: SearchState): string {
+  return [
+    record.propertyId,
+    state.checkIn,
+    state.checkOut,
+    state.adults,
+    state.rooms,
+    (state.childrenAges ?? []).join('-'),
+    state.currency,
+  ].join(':');
+}
+
+function detailedResultEvent(): string {
+  const pricingInfo = Actor.getChargingManager().getPricingInfo();
+  if (!pricingInfo.isPayPerEvent) return DETAILED_HOTEL_SCRAPED_EVENT;
+
+  return selectDetailedResultEvent(pricingInfo.perEventPrices);
+}
+
+export function selectDetailedResultEvent(
+  perEventPrices: Record<string, number>,
+): string {
+  // Adding paid events to an existing public Actor has a 14-day notice period.
+  // During that transition, fall back to the existing result event instead of
+  // invoking an unknown event (which Apify otherwise prices at its default).
+  if (perEventPrices[DETAILED_HOTEL_SCRAPED_EVENT] !== undefined) {
+    return DETAILED_HOTEL_SCRAPED_EVENT;
+  }
+  return HOTEL_SCRAPED_EVENT;
 }
 
 export function extractIdFromHref(href: string | null): string | null {

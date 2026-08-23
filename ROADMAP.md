@@ -1,5 +1,39 @@
 # Booking.com Hotel Scraper Roadmap
 
+## Phase 5: URL mode, real pagination, and detailed property data (2026-08-23)
+
+- Added Booking.com search-URL mode that preserves website filters, dates, occupancy,
+  currency, language, and ordering.
+- Replaced offset-only pagination with Booking.com's real next-page link when exposed;
+  the resolved current URL is now the bounded fallback, so destination IDs and search
+  context are retained.
+- Added destination filters for children ages, stars, price range, sort order, and
+  language.
+- Added optional detailed mode for room types, bed configuration, occupancy, room
+  prices, meal plans, cancellation/refundability, units left, property facilities,
+  photos, address, coordinates, description, check-in/out times, and surroundings.
+- Fast mode keeps the HTTP-first path. Detailed mode intentionally uses property-page
+  browser requests and charges only after the enriched record is saved.
+- Unit coverage is green. Live residential verification, pagination yield, detailed
+  field coverage, duration, and platform cost must be measured before updating the
+  older cost model below.
+
+Live one-result detailed proofs now supersede that pending note:
+
+- Build **1.0.37**, residential run `EU3TPSihyAtA2uVnH`: succeeded, 68.9s,
+  1 enriched hotel, 18 room options, 0 failures, 8.94 MB residential transfer. The
+  residential proxy component alone was about $0.0715 at the documented $8/GB rate.
+- Build **1.0.38**, datacenter-first run `kvSRvjY88YtoZXo9l`: succeeded, 53.1s,
+  1 enriched hotel, 18 room options, 0 failures, zero residential transfer, about
+  $0.00215 total measured platform usage.
+
+The final price model keeps fast rows at $0.002 and adds one competitive $0.005
+detailed row. Detailed mode stays on datacenter proxy (or a user-supplied custom
+proxy), because the residential proof would require roughly $0.12 per row to remain
+sustainable and that price is not commercially viable. Fast mode retains its bounded
+residential fallback. The code falls back to the existing event during Apify's
+required 14-day notice period for the newly added paid event.
+
 ## Phase 4: Repriced to $2.00 / 1,000 (2026-08-13)
 
 The owner changed the Console price from **$0.004 to $0.002 per `hotel-scraped`**
@@ -61,15 +95,15 @@ per-destination state and its own crawler, and `resetNoResultDestinations()` pre
 blocked first tier from being misreported as a genuinely empty search. Destination
 search charges happen once, before the tier loop, so a retry cannot double-charge.
 
-### Open issues found during verification
+### Historical issues found before Phase 5
 
-- **Pagination does not advance.** With `maxResults: 50` the browser logged
+- **Offset-only pagination did not advance (code path replaced in Phase 5).** With `maxResults: 50` the browser logged
   `Found 50 cards` at `offset=0`, kept 25 valid records, then fetched `offset=25`,
   logged `Found 50 cards` again, and produced **zero** new records. Booking.com
   returned the same card set, so the second page fetch was pure waste. On residential
   that nearly doubles run cost for no extra rows. `maxResults` is therefore capped at a
-  practical **~25 per destination** even though the schema still allows 500. Advertise
-  more destinations rather than higher `maxResults` until the offset scheme is fixed.
+  practical **~25 per destination** even though the schema allowed 500. Phase 5 now
+  follows the real next-page URL; a live multi-page proof is still required.
 - **Only about half of the cards become records.** Pages render 50 cards but yield ~25
   valid rows, so ad or placeholder cards are being counted in `Found N cards`.
 - **The cheerio fast path never succeeds in production.** It finished in 1-2.5s with no
@@ -139,4 +173,5 @@ search charges happen once, before the tier loop, so a retry cannot double-charg
   source terms, output parity, block behavior, and cost. Do not copy a competitor's
   undocumented endpoint or treat the phrase "unprotected GraphQL API" as permission
   or a stable contract.
-- Add premium detail scraping only after each mode has measured cost and a defensible event price.
+- Detailed scraping shipped as an opt-in mode in Phase 5 at the existing record price;
+  benchmark it separately and revisit pricing if live cost threatens margin.

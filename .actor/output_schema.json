@@ -1,13 +1,13 @@
 {
   "actorOutputSchemaVersion": 1,
   "title": "Booking.com Hotel Scraper Output",
-  "description": "Structured Booking.com accommodation records with destinations, property IDs, hotel names, star ratings, guest scores, review counts, prices, locations, cancellation flags, image URLs, property URLs, and scraped timestamps.",
+  "description": "Structured Booking.com accommodation records. Fast mode returns search-card data; detailed mode adds room options and prices, availability, meal and cancellation policies, facilities, images, descriptions, addresses, coordinates, check-in/out times, and surroundings.",
   "type": "object",
   "properties": {
     "results": {
       "type": "string",
       "title": "Booking.com hotel records",
-      "description": "Clean dataset items containing public accommodation listing, price, review, location, availability, image, and property URL data.",
+      "description": "Clean dataset items containing Booking.com hotel, price, availability, room, policy, facility, image, location, and property URL data.",
       "template": "{{links.apiDefaultDatasetUrl}}/items"
     }
   }

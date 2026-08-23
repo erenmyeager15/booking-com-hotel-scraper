@@ -17,6 +17,17 @@ await Actor.init();
 
 const input = normalizeInput((await Actor.getInput<ActorInput>()) ?? {});
 const isCloudRun = Boolean(process.env.APIFY_ACTOR_RUN_ID);
+interface SearchSource {
+  destination: string;
+  searchUrl?: string;
+}
+
+const searchSources: SearchSource[] = input.searchUrls.length > 0
+  ? input.searchUrls.map((searchUrl, index) => ({
+    destination: destinationFromSearchUrl(searchUrl) ?? `Booking.com URL ${index + 1}`,
+    searchUrl,
+  }))
+  : input.destinations.map((destination) => ({ destination }));
 
 if (requiresCloudProxy(input.proxyConfiguration, isCloudRun)) {
   await Actor.setValue('OUTPUT', {
@@ -30,26 +41,29 @@ if (requiresCloudProxy(input.proxyConfiguration, isCloudRun)) {
   );
 }
 
-const proxyTiers = buildProxyTiers(input.proxyConfiguration);
+// Fast mode can afford a bounded residential fallback because one search page yields
+// many records. Detailed mode opens a page per hotel, so it stays on datacenter (or a
+// user-supplied custom proxy) to keep its fixed result price sustainable.
+const proxyTiers = buildProxyTiers(input.proxyConfiguration, !input.scrapeDetails);
 
-const chargedDestinations: string[] = [];
+const chargedSearches: SearchSource[] = [];
 let searchChargeLimitReached = false;
 
-for (const destination of input.destinations) {
+for (const source of searchSources) {
   const charged = await chargeDestinationSearch();
   if (!charged) {
     searchChargeLimitReached = true;
     break;
   }
-  chargedDestinations.push(destination);
+  chargedSearches.push(source);
 }
 
-if (chargedDestinations.length === 0) {
-  await Actor.fail('Maximum cost per run was reached before starting any Booking.com destination search.');
+if (chargedSearches.length === 0) {
+  await Actor.fail('Maximum cost per run was reached before starting any Booking.com search.');
 }
 
 if (searchChargeLimitReached) {
-  console.warn(`Maximum cost per run reached after ${chargedDestinations.length} charged destination search(es); only those searches will run.`);
+  console.warn(`Maximum cost per run reached after ${chargedSearches.length} charged search(es); only those searches will run.`);
 }
 
 let failedRequestCount = 0;
@@ -78,25 +92,35 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
     throw new Error(`Booking.com proxy configuration failed: ${message}`);
   }
 
-  console.info(`Starting Booking.com search for ${chargedDestinations.length} destination(s) using ${tier.label}.`);
+  console.info(`Starting ${input.scrapeDetails ? 'detailed' : 'fast'} Booking.com scrape for ${chargedSearches.length} search source(s) using ${tier.label}.`);
 
-  const initialRequests: SearchRequest[] = chargedDestinations.map((destination) => {
-    const state = createSearchState(destination);
+  const initialRequests: SearchRequest[] = chargedSearches.map((source, sourceIndex) => {
+    const state = createSearchState(source);
     return {
       url: buildSearchUrl(state),
-      uniqueKey: `http:${tierIndex}:${destination}:0`,
+      uniqueKey: `search:${tierIndex}:${sourceIndex}:0`,
       userData: { state },
       label: 'search',
     };
   });
 
-  const httpResult = await runHttpFastPath(initialRequests, proxyConfiguration);
   const crawler = createBrowserCrawler(proxyConfiguration);
+  let httpResult = {
+    chargedHotelCount: 0,
+    noResultDestinationCount: 0,
+    spendingLimitReached: false,
+    fallbackRequests: [] as SearchRequest[],
+  };
 
   try {
-    if (!httpResult.spendingLimitReached && httpResult.fallbackRequests.length > 0) {
-      console.info(`Using browser fallback for ${httpResult.fallbackRequests.length} unresolved Booking.com page(s).`);
-      await crawler.run(httpResult.fallbackRequests);
+    if (input.scrapeDetails) {
+      await crawler.run(initialRequests);
+    } else {
+      httpResult = await runHttpFastPath(initialRequests, proxyConfiguration);
+      if (!httpResult.spendingLimitReached && httpResult.fallbackRequests.length > 0) {
+        console.info(`Using browser fallback for ${httpResult.fallbackRequests.length} unresolved Booking.com page(s).`);
+        await crawler.run(httpResult.fallbackRequests);
+      }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -113,18 +137,18 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   // Stop once records were collected, the user's limit was hit, or Booking.com
   // genuinely reported every destination as empty. Only an unproductive, unexplained
   // attempt is worth paying for a second time on a different proxy tier.
-  const everyDestinationReportedEmpty = noResultDestinationCount >= chargedDestinations.length;
+  const everyDestinationReportedEmpty = noResultDestinationCount >= chargedSearches.length;
   if (chargedHotelCount > 0 || spendingLimitReached || everyDestinationReportedEmpty) break;
 }
 
-const allSearchesCompletedEmpty = noResultDestinationCount === chargedDestinations.length
+const allSearchesCompletedEmpty = noResultDestinationCount === chargedSearches.length
   && failedRequestCount === 0;
 if (chargedHotelCount === 0 && !allSearchesCompletedEmpty) {
   await Actor.setValue('OUTPUT', {
     status: 'failed_no_results',
     results: 0,
     failedRequests: failedRequestCount,
-    destinationsAttempted: chargedDestinations.length,
+    searchesAttempted: chargedSearches.length,
     spendingLimitReached,
   });
   throw new Error(`No Booking.com hotel records were charged and saved. Failed requests: ${failedRequestCount}.`);
@@ -140,26 +164,43 @@ if (spendingLimitReached) {
 
 await Actor.setValue('OUTPUT', {
   status: allSearchesCompletedEmpty ? 'succeeded_no_matches' : 'succeeded',
+  mode: input.scrapeDetails ? 'detailed' : 'fast',
   results: chargedHotelCount,
   failedRequests: failedRequestCount,
-  destinationsAttempted: chargedDestinations.length,
+  searchesAttempted: chargedSearches.length,
   noResultDestinations: noResultDestinationCount,
   spendingLimitReached,
 });
 
 await Actor.exit();
 
-function createSearchState(destination: string): SearchState {
+function createSearchState(source: SearchSource): SearchState {
+  const url = source.searchUrl ? new URL(source.searchUrl) : null;
+  const urlCheckIn = validDateParam(url?.searchParams.get('checkin'));
+  const urlCheckOut = validDateParam(url?.searchParams.get('checkout'));
+  const childrenAges = url
+    ? url.searchParams.getAll('age').map(Number).filter((age) => Number.isInteger(age) && age >= 0 && age <= 17)
+    : input.childrenAges;
+
   return {
-    destination,
-    checkIn: input.checkIn,
-    checkOut: input.checkOut,
-    adults: input.adults,
-    rooms: input.rooms,
+    destination: source.destination,
+    ...(source.searchUrl ? { searchUrl: source.searchUrl } : {}),
+    checkIn: urlCheckIn ?? input.checkIn,
+    checkOut: urlCheckOut ?? input.checkOut,
+    adults: positiveIntegerParam(url?.searchParams.get('group_adults')) ?? input.adults,
+    rooms: positiveIntegerParam(url?.searchParams.get('no_rooms')) ?? input.rooms,
+    childrenAges,
     propertyTypes: input.propertyTypes,
+    stars: input.stars,
     minReviewScore: input.minReviewScore,
+    minPrice: input.minPrice,
+    maxPrice: input.maxPrice,
+    sortBy: input.sortBy,
     maxResults: input.maxResults,
-    currency: input.currency,
+    currency: (url?.searchParams.get('selected_currency') ?? input.currency).toUpperCase(),
+    language: url?.searchParams.get('lang') ?? input.language,
+    scrapeDetails: input.scrapeDetails,
+    maxImages: input.maxImages,
     collectedCount: 0,
     examinedCount: 0,
     seenIds: [],
@@ -167,6 +208,20 @@ function createSearchState(destination: string): SearchState {
     pageSize: PAGE_SIZE,
     hasMore: true,
   };
+}
+
+function destinationFromSearchUrl(searchUrl: string): string | null {
+  const destination = new URL(searchUrl).searchParams.get('ss')?.replace(/\s+/g, ' ').trim();
+  return destination || null;
+}
+
+function validDateParam(value: string | null | undefined): string | null {
+  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+function positiveIntegerParam(value: string | null | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined): PlaywrightCrawler {

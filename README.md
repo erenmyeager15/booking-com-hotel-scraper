@@ -1,171 +1,209 @@
-# Booking.com Hotel Scraper: Prices & Availability
+# Booking.com Scraper: Rooms, Prices & Availability
 
-Scrape Booking.com hotel and accommodation search results for travel market research, price monitoring, and competitor analysis. The actor searches one or more destinations for a date range, extracts clean property records, deduplicates by Booking.com property ID, and saves the results to an Apify Dataset. Export to JSON, CSV, Excel, or HTML, or pull via the Apify API. No login and no API key required.
+Scrape Booking.com hotels and accommodation by destination or by pasting a search-results URL with filters already applied. Export clean hotel records to JSON, CSV, Excel, XML, or HTML, or read them through the Apify API.
 
-For the first run, start with one destination, the default `maxResults: 25`, and Apify Proxy enabled. Dates are optional; when omitted, the Actor searches a one-night stay beginning 30 days after the run date. A Booking.com results page costs the same to fetch whether you keep 1 property or 25, so `maxResults: 25` is the best value per result and is the recommended starting point.
+Choose **fast mode** for efficient search-result collection. Turn on **detailed mode** when you need room-level prices and availability, occupancy, bed types, meal plans, cancellation policies, facilities, photos, descriptions, addresses, coordinates, check-in/out times, and nearby places.
 
-Each clean hotel record is saved through the `hotel-scraped` pay-per-event flow, so output is only kept when the result event charge is accepted. The actor skips incomplete cards that do not expose a property name and Booking.com hotel URL, so the dataset avoids empty placeholder rows.
+No Booking.com login or API key is required.
 
-## Features
+## Why use this Actor?
 
-- Multiple destinations in one run
-- Explicit or automatically generated future check-in and check-out dates
-- Adults, rooms, currency, review score, and property type inputs
-- Pagination up to 500 properties per destination
-- Datacenter-first proxy with automatic residential fallback, plus custom proxy support
-- Bounded retry/session handling that avoids long blocked-page loops
-- Machine-readable run summary in the `OUTPUT` key-value-store record
-- Null fallbacks for fields that Booking.com does not expose on every search card
+- Search by destination or paste a real Booking.com search URL
+- Preserve the website filters and ordering from pasted URLs
+- Choose fast search-card data or detailed property and room data
+- Search with children ages, star ratings, price range, property type, review score, currency, language, and sorting
+- Follow Booking.com's real next-page links for reliable pagination
+- Deduplicate properties and stop exactly at `maxResults`
+- Use datacenter proxy first; fast mode has a bounded residential fallback
+- Pay only for clean records saved to the dataset
+- Stop safely at the user's maximum run cost
 
-## Data Extracted
+## Fast mode vs. detailed mode
 
-| Field | Description |
-| --- | --- |
-| `propertyId` | Booking.com hotel slug or property ID |
-| `hotelName` | Property name |
-| `destination` | Destination used for the search |
-| `starRating` | Star rating when exposed |
-| `guestReviewScore` | Guest review score from 0 to 10 |
-| `reviewCount` | Number of reviews |
-| `totalPrice` | Total stay price for the searched dates |
-| `pricePerNight` | Calculated or exposed nightly price |
-| `originalPrice` | Original price before discount when exposed |
-| `discountPercentage` | Discount percentage when calculable |
-| `currency` | Requested currency |
-| `freeCancellation` | Free cancellation signal from the card |
-| `city` / `country` | Parsed from destination input |
-| `distanceFromCityCenter` | Distance text from Booking.com |
-| `propertyUrl` | Clean direct Booking.com hotel URL |
-| `thumbnailImageUrl` | Property thumbnail image URL |
-| `sustainabilityBadge` | Sustainability badge signal |
-| `geniusDiscount` | Genius discount signal |
-| `scrapedAt` | ISO timestamp |
+| Capability | Fast mode | Detailed mode |
+| --- | --- | --- |
+| Hotel name, URL, property ID | Yes | Yes |
+| Total and nightly stay price | Yes, from search card | Yes, with room-page fallback |
+| Stars, guest score, review count | Yes | Yes |
+| Original price and discount | When shown | When shown |
+| Free-cancellation and Genius signals | Yes | Yes |
+| Room types and bed configuration | No | Yes, when shown |
+| Room occupancy and units left | No | Yes, when shown |
+| Meal and cancellation policies | No | Yes, when shown |
+| Room-level price and availability | No | Yes, when dates are available |
+| Address, coordinates, description | No | Yes, when shown |
+| Facilities and image gallery | Thumbnail only | Yes |
+| Check-in/out times and surroundings | No | Yes, when shown |
+| Speed | Fastest | Slower: one property-page visit per result |
 
-## Use Cases
+Detailed mode is optional. Keep `scrapeDetails: false` for large listing searches, then enable it for the smaller set of properties where room and property depth matters.
 
-1. Hotel price monitoring across cities and dates
-2. Travel app and comparison-site data enrichment
-3. Hospitality competitor research
-4. Market research by review score, price, and destination
-5. Accommodation data collection for travel market research
+## Input modes
 
-## Pricing and cost control
+### 1. Search by destination
 
-This Actor uses Apify Pay Per Event pricing. The live Store configuration charges a small Actor start event and then charges hotel rows only when clean records are saved to the dataset.
-
-| Event | Price | When charged |
-| --- | ---: | --- |
-| `apify-actor-start` | $0.00005 per GB | When the run starts, minimum one event |
-| `hotel-scraped` | $0.002 | For each clean hotel record saved |
-
-That works out to **$2.00 per 1,000 hotels**, and there is effectively **no per-run fee**: the start event is $0.00005, not the $0.01 to $0.10 per-run charge several comparable Booking.com scrapers apply. Small test runs therefore cost almost nothing, and you are not penalised for checking output before scaling up.
-
-The current live pricing does not expose a separate per-destination search event. Hotel records are saved through the `hotel-scraped` event, and the run stops when the user's maximum cost limit is reached. Platform usage is **not** passed on to you; it is covered by the price above.
-
-Cost-control tips:
-
-- Start with one destination.
-- Use a one-night future date range for your first test.
-- Keep the default `maxResults: 25` for the first test run: it is one results page, the same fetch cost as a single result, and gives the lowest cost per property.
-- Leave `minReviewScore` at 0 for the broadest first test; add 7 or higher after output looks right.
-- Keep Apify Proxy enabled for cloud runs. Runs start on the cheaper datacenter pool and retry automatically on residential if Booking.com blocks it. Direct Apify cloud traffic is rejected early because Booking.com presents a verification challenge.
-- Avoid `maxResults: 1`. One search page is fetched either way, so a single-result run pays a full page of proxy transfer for one row. Values of 25 amortize that fetch across many properties.
-- Increase destinations and result limits only after a small run returns the expected data.
-- Runtime memory defaults to 1 GB and can be raised to 2 GB for larger batches.
-
-## Input
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `destinations` | array | yes | `["London, United Kingdom"]` | One or more destinations to search. Use one destination for tests. |
-| `checkIn` | string | no | 30 days after run | Optional future check-in date in YYYY-MM-DD format. |
-| `checkOut` | string | no | one night after check-in | Optional future check-out date in YYYY-MM-DD format. Must be after check-in. |
-| `adults` | integer | no | `2` | Number of adults per room. |
-| `rooms` | integer | no | `1` | Number of rooms to search for. |
-| `propertyTypes` | array | no | `[]` | Optional property type filters. Leave empty for all accommodation types. |
-| `minReviewScore` | number | no | `0` | Optional guest review score threshold. |
-| `maxResults` | integer | no | `25` | Maximum properties per destination, up to 500. The default is the measured yield of one results page and the best cost per property. Values above 25 per destination may not return more properties today; add destinations instead. |
-| `currency` | string | no | `USD` | Display currency for prices. |
-| `proxyConfiguration` | object | no | Apify Proxy | Apify proxy settings. Leave groups empty to start on the cheaper datacenter pool with an automatic residential retry. |
-
-## Input Example
+Enter one or more destinations and configure the stay and filters in the Actor input.
 
 ```json
 {
   "destinations": ["London, United Kingdom"],
   "adults": 2,
   "rooms": 1,
-  "minReviewScore": 0,
+  "childrenAges": [7],
+  "stars": [4, 5],
+  "minReviewScore": 8,
+  "minPrice": 100,
+  "maxPrice": 500,
+  "sortBy": "priceLowToHigh",
   "maxResults": 25,
-  "currency": "USD",
+  "currency": "GBP",
+  "language": "en-gb",
+  "scrapeDetails": false,
   "proxyConfiguration": {
     "useApifyProxy": true
   }
 }
 ```
 
-To search specific dates, add `checkIn` and `checkOut` in `YYYY-MM-DD` format. Otherwise the dynamic one-night default remains future-safe for saved tasks and automated QA.
+Dates are optional. When omitted, the Actor uses a one-night stay beginning 30 days after the run date. This keeps saved tasks and schedules from becoming stale.
 
-## How to Scrape Booking.com Hotels (Step by Step)
+### 2. Search by Booking.com URL
 
-1. Click **Try for free** / **Run**.
-2. Enter one destination. Optionally provide future `checkIn` / `checkOut` dates.
-3. Set `adults`, `rooms`, and `currency`, and leave `maxResults` at the default `25`.
-4. Optionally filter by `propertyTypes` and `minReviewScore`, then click **Run**.
-5. When the run finishes, export results to JSON, CSV, Excel, or HTML, or pull them via the Apify API.
-
-## Output dataset
-
-The default **Hotel Records** dataset view is designed for quick export to CSV, Excel, JSON, or API workflows. It shows the most useful booking research fields first: destination, hotel name, stars, guest score, review count, total price, nightly price, currency, city/country, distance from city center, cancellation signal, property URL, property ID, and scraped timestamp. Original price, discount percentage, thumbnail, sustainability, and Genius signals remain available in full JSON when Booking.com exposes them.
-
-The default key-value store also contains an `OUTPUT` record with `status`, `results`, `failedRequests`, destination counts, and `spendingLimitReached`. This makes schedules and integrations easier to monitor without parsing logs.
-
-The following row came from a successful one-result London run on July 29, 2026.
+Apply filters on Booking.com, copy the complete search-results URL, and paste it into `searchUrls`.
 
 ```json
 {
-  "propertyId": "radissonblubloomsbury",
-  "hotelName": "Radisson Blu Hotel, London Bloomsbury",
-  "starRating": 4,
-  "guestReviewScore": 7.9,
-  "reviewCount": 4665,
-  "city": "London",
-  "country": "United Kingdom",
-  "distanceFromCityCenter": "1.1 km from downtown",
-  "totalPrice": 268,
-  "pricePerNight": 268,
-  "originalPrice": 298,
-  "discountPercentage": 10,
-  "currency": "USD",
-  "freeCancellation": false,
-  "propertyUrl": "https://www.booking.com/hotel/gb/radissonblubloomsbury.html",
-  "thumbnailImageUrl": "https://cf.bstatic.com/xdata/images/hotel/square240/825877231.webp?k=2c78396ced2c2810e1c00a0a57cc901e1bd41d75e1c5fc46655bed6d7331ab93&o=",
-  "sustainabilityBadge": true,
-  "geniusDiscount": false,
-  "destination": "London, United Kingdom",
-  "scrapedAt": "2026-07-29T07:42:45.759Z"
+  "searchUrls": [
+    "https://www.booking.com/searchresults.html?ss=Paris%2C+France&checkin=2026-10-10&checkout=2026-10-12&group_adults=2&no_rooms=1&nflt=class%3D5%3Bht_id%3D201&order=price"
+  ],
+  "maxResults": 50,
+  "scrapeDetails": true,
+  "maxImages": 10,
+  "proxyConfiguration": {
+    "useApifyProxy": true
+  }
 }
 ```
 
-## Technical Details
+URL mode preserves the Booking.com URL's destination, dates, occupancy, currency, language, filters, and ordering while changing only pagination controls. When `searchUrls` is supplied, it takes priority over `destinations`; this prevents the input form's default London destination from starting an unintended extra search.
 
-- Runtime: Node.js 20 on `apify/actor-node-playwright-chrome:20`
-- Scraping engine: Crawlee PlaywrightCrawler (Heavily Optimized)
-- Proxy: Apify datacenter pool first with an automatic residential retry, or a suitable custom proxy; unproxied Apify cloud runs fail early
-- Retry policy: up to two fast retries/session rotations for blocked responses
-- Browser safety: one concurrent page, 30 requests per minute, 45-second navigation timeout, and pagination capped at 40 pages per destination. Media, fonts, styles, and common analytics requests are blocked to reduce transfer and memory use.
-- Storage: Apify Dataset
-- Charge model: `Actor.pushData(record, "hotel-scraped")` per saved hotel
+## Input reference
 
-## Notes
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `destinations` | string[] | London | Destinations for destination mode, up to 50 |
+| `searchUrls` | string[] | `[]` | Booking.com search-results URLs, up to 50 |
+| `checkIn` | string | run date + 30 days | Future date in `YYYY-MM-DD` |
+| `checkOut` | string | one night later | Date after check-in |
+| `adults` | integer | `2` | Adults per search |
+| `rooms` | integer | `1` | Number of rooms |
+| `childrenAges` | integer[] | `[]` | One age from 0–17 for each child |
+| `propertyTypes` | string[] | `[]` | Hotels, Apartments, Hostels, Villas, Resorts, B&Bs, or Guest houses |
+| `stars` | integer[] | `[]` | Star categories from 1–5 |
+| `minReviewScore` | number | `0` | Exact post-filter threshold from 0–10 |
+| `minPrice` / `maxPrice` | number | empty | Total stay-price range in selected currency |
+| `sortBy` | string | `popularity` | Popularity, lowest price, review score, or distance |
+| `maxResults` | integer | `25` | Maximum properties per destination or URL, up to 500 |
+| `currency` | string | `USD` | Display currency for destination mode |
+| `language` | string | `en-us` | Booking.com content language |
+| `scrapeDetails` | boolean | `false` | Visit property pages for detailed property and room data |
+| `maxImages` | integer | `10` | Images per property in detailed mode, from 1–50 |
+| `proxyConfiguration` | object | Apify Proxy | Apify or custom proxy settings |
 
-- Booking.com can vary card fields by market, destination, availability, and experiment. Unavailable fields are returned as `null`.
-- The default Apify table view focuses on populated search-result fields. Full JSON includes the complete runtime record shown above.
-- This actor collects search result card data, not every detail available on individual hotel detail pages.
-- Data is for research and business intelligence, not booking, legal, or financial advice.
+## Output data
 
-## Responsible Use
+Every result includes search context so prices can be interpreted correctly:
 
-This Actor is intended for lawful collection of publicly available information only. Users are responsible for ensuring their use complies with the source website's terms, robots.txt, applicable privacy laws, including India's DPDP Act, and all local regulations.
+- `propertyId`, `hotelName`, `propertyUrl`, and `sourceUrl`
+- `destination`, `city`, `country`, and distance from city center
+- `starRating`, `guestReviewScore`, and `reviewCount`
+- `totalPrice`, `pricePerNight`, `originalPrice`, `discountPercentage`, and `currency`
+- `available`, `availabilityStatus`, and `freeCancellation`
+- `checkIn`, `checkOut`, `nights`, `adults`, `children`, and `rooms`
+- `thumbnailImageUrl`, `sustainabilityBadge`, and `geniusDiscount`
+- `scrapeMode`, `billingTier`, and `scrapedAt`
 
-Do not use this Actor to collect, store, sell, or misuse personal data without a lawful basis. The Actor author is not responsible for misuse by end users.
+Detailed mode can additionally populate:
+
+- `address`, `latitude`, `longitude`, and `description`
+- `checkInTime` and `checkOutTime`
+- `facilities`, `imageUrls`, and `surroundings`
+- `roomOptions`
+
+Each `roomOptions` item can contain:
+
+```json
+{
+  "roomName": "Deluxe King Room",
+  "bedType": "1 king bed",
+  "occupancy": 2,
+  "totalPrice": 320,
+  "currency": "USD",
+  "mealPlan": "Breakfast included",
+  "cancellationPolicy": "Free cancellation before 6 PM",
+  "freeCancellation": true,
+  "refundable": true,
+  "available": true,
+  "unitsLeft": 2,
+  "amenities": ["Air conditioning", "Private bathroom", "Free WiFi"]
+}
+```
+
+Booking.com varies fields by property, market, dates, device layout, and experiment. Missing scalar fields are returned as `null`; missing collections are returned as empty arrays rather than invented values.
+
+## Pagination
+
+The Actor first uses Booking.com's actual **Next page** URL. This preserves destination IDs, filters, experiments, and other search context that can be lost when an offset is constructed from scratch. If a next link is not exposed, the Actor falls back to the current resolved URL with a bounded offset.
+
+Pagination stops when any of these is true:
+
+- `maxResults` is reached
+- Booking.com has no next page
+- a page contains only already-seen properties
+- 40 pages have been examined for one source
+- the user's maximum run cost is reached
+
+## Pricing
+
+This Actor uses Pay Per Event pricing.
+
+| Event | Price |
+| --- | ---: |
+| Actor start | $0.00005 per GB, minimum one event |
+| Fast hotel record | $0.002 ($2 / 1,000) |
+| Detailed hotel record | $0.005 ($5 / 1,000) |
+
+Fast mode costs **$2.00 per 1,000 saved hotel records**. Detailed mode costs **$5.00 per 1,000** because it opens one extra property page and returns substantially more data. Every row reports its `billingTier`.
+
+Platform runtime and the default proxy are included in these event prices and are not added separately to the user's bill. Detailed mode uses the datacenter pool (or a user-supplied custom proxy), keeping its price predictable and competitive.
+
+The detailed events are new. Apify applies its standard 14-day notice period before new paid events take effect; during that transition, detailed rows safely use the existing fast-result event instead of an undefined event price.
+
+For a first detailed test, use one destination and `maxResults: 1`. For bulk collection, use fast mode and a full page such as 25 results. Set a maximum run cost in Apify when you want a hard ceiling on fast mode's automatic residential fallback.
+
+## Reliability and cost control
+
+- Direct Apify cloud traffic is rejected early because Booking.com commonly presents a verification challenge.
+- With the default proxy input, fast mode tries the lower-cost datacenter pool first and automatically retries with residential only when the first tier produces no usable data.
+- Detailed mode stays on datacenter proxy to keep its fixed $5/1,000 price sustainable. Apify Residential is rejected for detailed runs; custom proxy URLs remain supported.
+- Explicit Apify proxy groups and custom proxy URLs are always respected.
+- Blocked sessions are retired and retried with bounded limits.
+- Clean records are stored only when the corresponding result charge is accepted.
+- The `OUTPUT` key-value-store record reports status, mode, result count, failed requests, source count, empty searches, and whether the spending limit stopped the run.
+
+## API example
+
+Run the Actor with the Apify API, then read the default dataset:
+
+```bash
+curl "https://api.apify.com/v2/acts/fascinating_lentil~booking-com-hotel-scraper/runs?token=YOUR_TOKEN" \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"destinations":["London, United Kingdom"],"maxResults":1,"scrapeDetails":true}'
+```
+
+The same Actor can be connected to Make, Zapier, Google Sheets, webhooks, scheduled tasks, and other Apify integrations.
+
+## Responsible use
+
+This Actor collects publicly available accommodation information. Use it only where you have a lawful purpose and comply with Booking.com's terms, robots.txt, applicable privacy rules, and local regulations. Do not use the Actor to misuse personal data or interfere with the source service.

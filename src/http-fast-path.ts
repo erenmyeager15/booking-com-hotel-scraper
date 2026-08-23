@@ -147,6 +147,12 @@ export async function runHttpFastPath(
         return;
       }
 
+      const nextHref = $('[data-testid="pagination"] a[aria-label="Next page"], '
+        + '[data-testid="pagination"] a[aria-label*="Next"], a[aria-label="Next page"], a.paging-next')
+        .first()
+        .attr('href');
+      const currentUrl = request.loadedUrl ?? request.url;
+      const nextPageUrl = resolveUrl(nextHref, currentUrl);
       const progressAction = decidePageProgress({
         cardCount: cards.length,
         extractedCount: extractedOnPage,
@@ -155,6 +161,7 @@ export async function runHttpFastPath(
         filteredCount: filteredOnPage,
         offset: state.offset,
         pageSize: state.pageSize,
+        hasNextPage: Boolean(nextPageUrl),
       });
 
       if (progressAction === 'retry') {
@@ -168,7 +175,7 @@ export async function runHttpFastPath(
       }
 
       state.offset += state.pageSize;
-      const nextUrl = buildSearchUrl(state);
+      const nextUrl = nextPageUrl ?? buildSearchUrl(state, currentUrl);
       await activeCrawler.addRequests([{
         url: nextUrl,
         uniqueKey: `http:${state.destination}:${state.offset}`,
@@ -275,9 +282,41 @@ export function extractPropertyFromHtml(
     thumbnailImageUrl,
     sustainabilityBadge: /travel sustainable|sustainability/i.test(cardText),
     geniusDiscount: /genius/i.test(cardText),
+    available: true,
+    availabilityStatus: 'available',
+    checkIn: state.checkIn,
+    checkOut: state.checkOut,
+    nights: countNights(state.checkIn, state.checkOut),
+    adults: state.adults,
+    children: state.childrenAges?.length ?? 0,
+    rooms: state.rooms,
+    scrapeMode: 'fast',
+    billingTier: 'fast',
+    sourceUrl: state.searchUrl ?? buildSearchUrl({ ...state, offset: 0 }),
+    address: null,
+    description: null,
+    latitude: null,
+    longitude: null,
+    checkInTime: null,
+    checkOutTime: null,
+    facilities: [],
+    imageUrls: thumbnailImageUrl ? [thumbnailImageUrl] : [],
+    roomOptions: [],
+    surroundings: [],
     destination: state.destination,
     scrapedAt,
   };
+}
+
+function resolveUrl(href: string | undefined, baseUrl: string): string | null {
+  if (!href) return null;
+  try {
+    const url = new URL(href, baseUrl);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function firstSelection(card: CheerioSelection, selectors: string[]): CheerioSelection | null {

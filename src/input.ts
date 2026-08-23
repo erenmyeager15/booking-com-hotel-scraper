@@ -1,4 +1,4 @@
-import type { ActorInput, NormalizedInput, ProxyConfigInput } from './types.js';
+import type { ActorInput, NormalizedInput, ProxyConfigInput, SortBy } from './types.js';
 
 // Datacenter proxy is the default because it is not billed per gigabyte. A measured
 // London run cost $0.00540 on the datacenter pool versus $0.03336 on residential, where
@@ -14,15 +14,26 @@ const ALLOWED_CURRENCIES = new Set([
   'USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'BRL',
   'MXN', 'SEK', 'NOK', 'DKK', 'NZD', 'KRW', 'SGD', 'MYR', 'THB', 'TRY',
 ]);
+const ALLOWED_SORTS = new Set<SortBy>([
+  'popularity', 'priceLowToHigh', 'reviewScore', 'distance',
+]);
+const ALLOWED_LANGUAGES = new Set([
+  'en-us', 'en-gb', 'de', 'es', 'fr', 'it', 'nl', 'pt-br', 'pt-pt', 'ja',
+  'zh-cn', 'zh-tw', 'ko', 'ar', 'hi', 'tr', 'pl', 'sv', 'da', 'no', 'fi',
+]);
 
 export function normalizeInput(input: ActorInput = {}, today = new Date()): NormalizedInput {
-  const destinations = [...new Set((Array.isArray(input.destinations) ? input.destinations : [])
+  const searchUrls = normalizeSearchUrls(input.searchUrls);
+  // URL mode is intentionally exclusive. Apify's input UI applies the London
+  // destination default even when a user pastes a URL; ignoring destinations when
+  // searchUrls are present prevents an unexpected second, paid search.
+  const destinations = searchUrls.length > 0 ? [] : [...new Set((Array.isArray(input.destinations) ? input.destinations : [])
     .map((destination) => cleanText(destination))
     .filter(Boolean))]
     .slice(0, 50);
 
-  if (destinations.length === 0) {
-    throw new Error('At least one destination is required. Provide a "destinations" array.');
+  if (destinations.length === 0 && searchUrls.length === 0) {
+    throw new Error('Provide at least one destination or Booking.com search URL.');
   }
 
   const checkIn = cleanText(input.checkIn)
@@ -41,17 +52,43 @@ export function normalizeInput(input: ActorInput = {}, today = new Date()): Norm
   }
 
   const currency = cleanText(input.currency || 'USD').toUpperCase();
+  const languageCandidate = cleanText(input.language || 'en-us').toLowerCase();
+  const sortCandidate = cleanText(input.sortBy || 'popularity') as SortBy;
+  const minPrice = normalizeOptionalNumber(input.minPrice, 'minPrice');
+  const maxPrice = normalizeOptionalNumber(input.maxPrice, 'maxPrice');
+
+  if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
+    throw new Error('minPrice must be less than or equal to maxPrice.');
+  }
+
+  const scrapeDetails = input.scrapeDetails === true;
+  const proxyConfiguration = normalizeProxyConfiguration(input.proxyConfiguration);
+  if (
+    scrapeDetails
+    && proxyConfiguration.apifyProxyGroups?.some((group) => group.toUpperCase() === 'RESIDENTIAL')
+  ) {
+    throw new Error(
+      'Detailed mode does not support Apify Residential proxy because its transfer cost is too high. '
+      + 'Leave proxy groups empty to use the included datacenter proxy, or provide your own custom proxy URL.',
+    );
+  }
 
   return {
     destinations,
+    searchUrls,
     checkIn,
     checkOut,
     adults: clampInteger(input.adults, 2, 1, 30),
     rooms: clampInteger(input.rooms, 1, 1, 30),
+    childrenAges: normalizeIntegerArray(input.childrenAges, 0, 17, 10, false),
     propertyTypes: Array.isArray(input.propertyTypes)
       ? input.propertyTypes.map((type) => cleanText(type)).filter(Boolean)
       : [],
+    stars: normalizeIntegerArray(input.stars, 1, 5, 5, true),
     minReviewScore: clampNumber(input.minReviewScore, 0, 0, 10),
+    minPrice,
+    maxPrice,
+    sortBy: ALLOWED_SORTS.has(sortCandidate) ? sortCandidate : 'popularity',
     // Defaults to the real yield of one Booking.com results page. A page costs the
     // same in proxy transfer whether 1 or 25 records are kept, so a default of 1 spent
     // a whole page to bill a single hotel and lost money on every run. Do not raise
@@ -61,8 +98,41 @@ export function normalizeInput(input: ActorInput = {}, today = new Date()): Norm
     // pagination limitation noted in ROADMAP.md.
     maxResults: clampInteger(input.maxResults, 25, 1, 500),
     currency: ALLOWED_CURRENCIES.has(currency) ? currency : 'USD',
-    proxyConfiguration: normalizeProxyConfiguration(input.proxyConfiguration),
+    language: ALLOWED_LANGUAGES.has(languageCandidate) ? languageCandidate : 'en-us',
+    scrapeDetails,
+    maxImages: clampInteger(input.maxImages, 10, 1, 50),
+    proxyConfiguration,
   };
+}
+
+export function normalizeSearchUrls(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  const urls: string[] = [];
+  for (const rawValue of value) {
+    const rawUrl = cleanText(rawValue);
+    if (!rawUrl) continue;
+
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      throw new Error(`Invalid Booking.com search URL: ${rawUrl}`);
+    }
+
+    const hostname = url.hostname.toLowerCase();
+    if (!(hostname === 'booking.com' || hostname.endsWith('.booking.com'))) {
+      throw new Error(`searchUrls only accepts Booking.com URLs: ${rawUrl}`);
+    }
+    if (!/\/searchresults(?:\.html)?\/?$/i.test(url.pathname)) {
+      throw new Error(`Use a Booking.com search-results URL, not a property or homepage URL: ${rawUrl}`);
+    }
+
+    url.hash = '';
+    urls.push(url.toString());
+  }
+
+  return [...new Set(urls)].slice(0, 50);
 }
 
 export function normalizeProxyConfiguration(value: unknown): ProxyConfigInput {
@@ -107,7 +177,7 @@ export interface ProxyTier {
  * as a fallback, so a datacenter block degrades into a costlier run instead of a
  * failed one. Custom proxy URLs and explicit group choices are never overridden.
  */
-export function buildProxyTiers(value: ProxyConfigInput): ProxyTier[] {
+export function buildProxyTiers(value: ProxyConfigInput, allowResidentialFallback = true): ProxyTier[] {
   if (value.proxyUrls?.length) {
     return [{ label: 'custom proxy URLs', options: toProxyConfigurationOptions(value) }];
   }
@@ -121,16 +191,19 @@ export function buildProxyTiers(value: ProxyConfigInput): ProxyTier[] {
     }];
   }
 
-  return [
+  const tiers: ProxyTier[] = [
     {
       label: 'datacenter proxy',
       options: toProxyConfigurationOptions(value),
     },
-    {
+  ];
+  if (allowResidentialFallback) {
+    tiers.push({
       label: 'residential proxy fallback',
       options: toProxyConfigurationOptions({ ...value, apifyProxyGroups: [...RESIDENTIAL_GROUPS] }),
-    },
-  ];
+    });
+  }
+  return tiers;
 }
 
 export function requiresCloudProxy(value: ProxyConfigInput, isCloudRun: boolean): boolean {
@@ -180,6 +253,28 @@ function clampNumber(value: unknown, defaultValue: number, minimum: number, maxi
   const numericValue = Number(value ?? defaultValue);
   const safeValue = Number.isFinite(numericValue) ? numericValue : defaultValue;
   return Math.min(Math.max(safeValue, minimum), maximum);
+}
+
+function normalizeOptionalNumber(value: unknown, fieldName: string): number | null {
+  if (value === undefined || value === null || cleanText(value) === '') return null;
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    throw new Error(`${fieldName} must be a non-negative number.`);
+  }
+  return numericValue;
+}
+
+function normalizeIntegerArray(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  maxItems: number,
+  unique: boolean,
+): number[] {
+  if (!Array.isArray(value)) return [];
+  const values = value.map(Number)
+    .filter((item) => Number.isInteger(item) && item >= minimum && item <= maximum);
+  return (unique ? [...new Set(values)] : values).slice(0, maxItems);
 }
 
 function cleanStringArray(value: unknown): string[] {

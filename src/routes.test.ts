@@ -9,6 +9,7 @@ import {
 } from './input.js';
 import {
   buildSearchUrl,
+  buildPropertyDetailUrl,
   classifyBookingDocument,
   countNights,
   decidePageProgress,
@@ -19,6 +20,7 @@ import {
   parseReviewCount,
   parseReviewScore,
   parseStarRating,
+  selectDetailedResultEvent,
 } from './routes.js';
 import type { SearchState } from './types.js';
 
@@ -45,6 +47,44 @@ test('normalizes Booking.com input and clamps limits', () => {
   assert.deepEqual(input.proxyConfiguration, {
     useApifyProxy: true,
   });
+});
+
+test('uses Booking.com search URL mode exclusively and preserves website filters', () => {
+  const savedUrl = 'https://www.booking.com/searchresults.html?ss=Paris%2C+France&checkin=2026-09-10&checkout=2026-09-12&nflt=class%3D5%3Bht_id%3D204&order=price';
+  const input = normalizeInput({
+    destinations: ['London, United Kingdom'],
+    searchUrls: [savedUrl],
+  }, fixedToday);
+
+  assert.deepEqual(input.destinations, []);
+  assert.equal(input.searchUrls.length, 1);
+  assert.throws(
+    () => normalizeInput({ searchUrls: ['https://example.com/searchresults.html?ss=Paris'] }, fixedToday),
+    /only accepts Booking\.com/,
+  );
+
+  const state: SearchState = {
+    destination: 'Paris, France',
+    searchUrl: input.searchUrls[0],
+    checkIn: '2026-09-10',
+    checkOut: '2026-09-12',
+    adults: 2,
+    rooms: 1,
+    propertyTypes: [],
+    minReviewScore: 0,
+    maxResults: 50,
+    currency: 'EUR',
+    collectedCount: 0,
+    examinedCount: 0,
+    seenIds: [],
+    offset: 25,
+    pageSize: 25,
+    hasMore: true,
+  };
+  const pagedUrl = new URL(buildSearchUrl(state));
+  assert.equal(pagedUrl.searchParams.get('nflt'), 'class=5;ht_id=204');
+  assert.equal(pagedUrl.searchParams.get('order'), 'price');
+  assert.equal(pagedUrl.searchParams.get('offset'), '25');
 });
 
 test('defaults to datacenter proxy first with a residential fallback tier', () => {
@@ -217,9 +257,15 @@ test('builds Booking.com search URLs with property filters', () => {
     adults: 2,
     rooms: 1,
     propertyTypes: ['Hotels', 'Apartments', 'Unknown'],
+    stars: [4, 5],
+    childrenAges: [7, 7],
     minReviewScore: 0,
+    minPrice: 100,
+    maxPrice: 500,
+    sortBy: 'priceLowToHigh',
     maxResults: 1,
     currency: 'USD',
+    language: 'en-gb',
     collectedCount: 0,
     examinedCount: 0,
     seenIds: [],
@@ -235,7 +281,60 @@ test('builds Booking.com search URLs with property filters', () => {
   assert.equal(url.searchParams.get('checkout'), '2026-08-16');
   assert.equal(url.searchParams.get('group_adults'), '2');
   assert.equal(url.searchParams.get('selected_currency'), 'USD');
-  assert.equal(url.searchParams.get('nflt'), 'ht_id=201;ht_id=203');
+  assert.equal(url.searchParams.get('group_children'), '2');
+  assert.deepEqual(url.searchParams.getAll('age'), ['7', '7']);
+  assert.equal(url.searchParams.get('lang'), 'en-gb');
+  assert.equal(url.searchParams.get('order'), 'price');
+  assert.equal(url.searchParams.get('nflt'), 'ht_id=201;ht_id=203;class=4;class=5;price=USD-100-500-1');
+});
+
+test('keeps detailed mode on the sustainable datacenter tier', () => {
+  const input = normalizeInput({
+    destinations: ['London, United Kingdom'],
+    checkIn: '2026-08-15',
+    checkOut: '2026-08-16',
+    scrapeDetails: true,
+  }, fixedToday);
+
+  const tiers = buildProxyTiers(input.proxyConfiguration, false);
+  assert.equal(tiers.length, 1);
+  assert.deepEqual(tiers[0].options, { useApifyProxy: true });
+
+  assert.throws(() => normalizeInput({
+    destinations: ['London, United Kingdom'],
+    checkIn: '2026-08-15',
+    checkOut: '2026-08-16',
+    scrapeDetails: true,
+    proxyConfiguration: {
+      useApifyProxy: true,
+      apifyProxyGroups: ['RESIDENTIAL'],
+    },
+  }, fixedToday), /Detailed mode does not support Apify Residential proxy/);
+});
+
+test('keeps paginating short rendered pages when Booking exposes a next link', () => {
+  assert.equal(decidePageProgress({
+    cardCount: 18,
+    extractedCount: 18,
+    newCount: 18,
+    duplicateCount: 0,
+    filteredCount: 0,
+    offset: 0,
+    pageSize: 25,
+    hasNextPage: true,
+  }), 'next');
+});
+
+test('selects detailed billing and safely supports the pricing transition', () => {
+  const activePrices = {
+    'hotel-scraped': 0.002,
+    'detailed-hotel-scraped': 0.005,
+  };
+  assert.equal(selectDetailedResultEvent(activePrices), 'detailed-hotel-scraped');
+  assert.equal(
+    selectDetailedResultEvent({ 'hotel-scraped': 0.002 }),
+    'hotel-scraped',
+  );
 });
 
 test('parses Booking.com card values', () => {
@@ -303,4 +402,25 @@ test('builds a hotel record from one browser card snapshot', () => {
   assert.equal(record.freeCancellation, true);
   assert.equal(record.geniusDiscount, true);
   assert.equal(record.propertyUrl, 'https://www.booking.com/hotel/in/example-stay.html');
+  const detailUrl = new URL(buildPropertyDetailUrl(record, {
+    destination: 'New Delhi, India',
+    checkIn: '2026-09-10',
+    checkOut: '2026-09-12',
+    adults: 2,
+    rooms: 1,
+    childrenAges: [5, 9],
+    propertyTypes: [],
+    minReviewScore: 0,
+    maxResults: 5,
+    currency: 'INR',
+    language: 'en-us',
+    collectedCount: 0,
+    examinedCount: 0,
+    seenIds: [],
+    offset: 0,
+    pageSize: 25,
+    hasMore: true,
+  }));
+  assert.equal(detailUrl.searchParams.get('checkin'), '2026-09-10');
+  assert.deepEqual(detailUrl.searchParams.getAll('age'), ['5', '9']);
 });

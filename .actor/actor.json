@@ -1,8 +1,8 @@
 {
   "actorSpecification": 1,
   "name": "booking-com-hotel-scraper",
-  "title": "Booking.com Hotel Scraper - $2/1k, Prices & Availability",
-  "description": "Scrape public Booking.com accommodation search results with hotel names, prices, guest scores, review counts, cancellation signals, property IDs, images, and URLs.",
+  "title": "Booking.com Scraper - $2/1k, Rooms, Prices & Availability",
+  "description": "Scrape Booking.com by destination or saved search URL. Export hotels, live stay prices, room options, availability, facilities, photos, policies, ratings, addresses, coordinates, and surroundings.",
   "version": "1.0",
   "buildTag": "latest",
   "categories": ["TRAVEL"],
@@ -20,6 +20,8 @@
           "transformation": {
             "fields": [
               "destination",
+              "scrapeMode",
+              "billingTier",
               "hotelName",
               "starRating",
               "guestReviewScore",
@@ -27,12 +29,22 @@
               "totalPrice",
               "pricePerNight",
               "currency",
+              "availabilityStatus",
+              "checkIn",
+              "checkOut",
+              "address",
+              "latitude",
+              "longitude",
               "city",
               "country",
               "distanceFromCityCenter",
               "freeCancellation",
               "propertyUrl",
               "propertyId",
+              "roomOptions",
+              "facilities",
+              "imageUrls",
+              "surroundings",
               "scrapedAt"
             ]
           },
@@ -40,6 +52,8 @@
             "component": "table",
             "properties": {
               "destination": { "label": "Destination", "format": "text" },
+              "scrapeMode": { "label": "Mode", "format": "text" },
+              "billingTier": { "label": "Billing Tier", "format": "text" },
               "hotelName": { "label": "Hotel", "format": "text" },
               "starRating": { "label": "Stars", "format": "number" },
               "guestReviewScore": { "label": "Guest Score", "format": "number" },
@@ -47,6 +61,12 @@
               "totalPrice": { "label": "Total Price", "format": "number" },
               "pricePerNight": { "label": "Per Night", "format": "number" },
               "currency": { "label": "Currency", "format": "text" },
+              "availabilityStatus": { "label": "Availability", "format": "text" },
+              "checkIn": { "label": "Check-in", "format": "text" },
+              "checkOut": { "label": "Check-out", "format": "text" },
+              "address": { "label": "Address", "format": "text" },
+              "latitude": { "label": "Latitude", "format": "number" },
+              "longitude": { "label": "Longitude", "format": "number" },
               "city": { "label": "City", "format": "text" },
               "country": { "label": "Country", "format": "text" },
               "distanceFromCityCenter": { "label": "Distance From City Center", "format": "text" },
@@ -77,12 +97,19 @@
           "eventPriceUsd": 0.002,
           "isPrimaryEvent": true,
           "isOneTimeEvent": false
+        },
+        "detailed-hotel-scraped": {
+          "eventTitle": "Detailed hotel scraped",
+          "eventDescription": "Charged for each enriched property record with room, policy, facility, image, address, coordinate, and availability data.",
+          "eventPriceUsd": 0.005,
+          "isPrimaryEvent": false,
+          "isOneTimeEvent": false
         }
       }
     }
   },
   "exampleRunInput": {
-    "body": "{\"destinations\":[\"London, United Kingdom\"],\"adults\":2,\"rooms\":1,\"propertyTypes\":[],\"minReviewScore\":0,\"maxResults\":25,\"currency\":\"USD\",\"proxyConfiguration\":{\"useApifyProxy\":true}}",
+    "body": "{\"destinations\":[\"London, United Kingdom\"],\"adults\":2,\"rooms\":1,\"childrenAges\":[],\"propertyTypes\":[],\"stars\":[],\"minReviewScore\":0,\"sortBy\":\"popularity\",\"maxResults\":1,\"currency\":\"USD\",\"language\":\"en-us\",\"scrapeDetails\":true,\"maxImages\":10,\"proxyConfiguration\":{\"useApifyProxy\":true}}",
     "contentType": "application/json; charset=utf-8"
   },
   "defaultRunOptions": {

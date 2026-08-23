@@ -1,6 +1,6 @@
 {
   "title": "Booking.com Hotel Scraper Input",
-  "description": "Search public Booking.com accommodation listings. The default run uses London, one full results page of 25 properties, and a dynamic one-night stay 30 days after the run date.",
+  "description": "Scrape Booking.com by destination or a saved search URL. Use fast mode for search-card data or detailed mode for rooms, availability, facilities, images, policies, address, coordinates, and surroundings.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
@@ -12,6 +12,17 @@
       "editor": "stringList",
       "minItems": 1,
       "maxItems": 50
+    },
+    "searchUrls": {
+      "title": "Booking.com Search URLs",
+      "type": "array",
+      "description": "Optional Booking.com search-results URLs. Paste URLs after applying filters on Booking.com; the Actor preserves those filters while paginating. When supplied, URL mode takes priority over destinations.",
+      "default": [],
+      "editor": "stringList",
+      "maxItems": 50,
+      "items": {
+        "type": "string"
+      }
     },
     "checkIn": {
       "title": "Check-in Date",
@@ -43,6 +54,19 @@
       "maximum": 30,
       "editor": "number"
     },
+    "childrenAges": {
+      "title": "Children Ages",
+      "type": "array",
+      "description": "Age of each child, from 0 to 17. Repeated ages are allowed. Example: [5, 9].",
+      "default": [],
+      "editor": "json",
+      "maxItems": 10,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 17
+      }
+    },
     "propertyTypes": {
       "title": "Property Type Filters",
       "type": "array",
@@ -51,6 +75,20 @@
       "default": [],
       "items": {
         "type": "string"
+      }
+    },
+    "stars": {
+      "title": "Star Ratings",
+      "type": "array",
+      "description": "Optional star-category filters. Example: [4, 5].",
+      "default": [],
+      "editor": "json",
+      "uniqueItems": true,
+      "maxItems": 5,
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5
       }
     },
     "minReviewScore": {
@@ -62,10 +100,33 @@
       "maximum": 10,
       "editor": "number"
     },
+    "minPrice": {
+      "title": "Minimum Stay Price",
+      "type": "number",
+      "description": "Optional minimum total price in the selected currency.",
+      "minimum": 0,
+      "editor": "number"
+    },
+    "maxPrice": {
+      "title": "Maximum Stay Price",
+      "type": "number",
+      "description": "Optional maximum total price in the selected currency.",
+      "minimum": 0,
+      "editor": "number"
+    },
+    "sortBy": {
+      "title": "Sort Results By",
+      "type": "string",
+      "description": "Booking.com result ordering for destination searches. URL mode keeps the ordering from the pasted URL.",
+      "default": "popularity",
+      "editor": "select",
+      "enum": ["popularity", "priceLowToHigh", "reviewScore", "distance"],
+      "enumTitles": ["Popularity", "Price: low to high", "Guest review score", "Distance from search"]
+    },
     "maxResults": {
       "title": "Maximum Results",
       "type": "integer",
-      "description": "Maximum number of properties to scrape per destination. The default of 25 is the measured yield of one Booking.com results page and gives the lowest cost per property, because a page costs the same to fetch whether you keep 1 property or 25. Values above 25 per destination may not return more properties today; add more destinations instead.",
+      "description": "Maximum number of properties per destination or search URL. The Actor follows Booking.com's next-page links and stops at this limit.",
       "default": 25,
       "minimum": 1,
       "maximum": 500,
@@ -79,15 +140,38 @@
       "editor": "select",
       "enum": ["USD", "EUR", "GBP", "JPY", "CAD", "AUD", "CHF", "CNY", "INR", "BRL", "MXN", "SEK", "NOK", "DKK", "NZD", "KRW", "SGD", "MYR", "THB", "TRY"]
     },
+    "language": {
+      "title": "Booking.com Language",
+      "type": "string",
+      "description": "Language used for Booking.com labels and policies. URL mode keeps the language in the pasted URL when present.",
+      "default": "en-us",
+      "editor": "select",
+      "enum": ["en-us", "en-gb", "de", "es", "fr", "it", "nl", "pt-br", "pt-pt", "ja", "zh-cn", "zh-tw", "ko", "ar", "hi", "tr", "pl", "sv", "da", "no", "fi"]
+    },
+    "scrapeDetails": {
+      "title": "Detailed Property & Room Data",
+      "type": "boolean",
+      "description": "Visit each property page to add room options, prices, occupancy, meal plans, cancellation policies, availability, facilities, photos, address, coordinates, check-in/out times, description, and surroundings. Slower than fast mode and billed at $5 per 1,000 detailed hotel records. Uses datacenter proxy to keep the price predictable.",
+      "default": false,
+      "editor": "checkbox"
+    },
+    "maxImages": {
+      "title": "Maximum Images Per Property",
+      "type": "integer",
+      "description": "Maximum property images returned in detailed mode.",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 50,
+      "editor": "number"
+    },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
       "type": "object",
-      "description": "Proxy settings for scraping. Apify Proxy or a suitable custom proxy is required for cloud runs because Booking.com challenges direct Apify cloud traffic. Leave the groups empty to use the default datacenter pool, which costs far less; if Booking.com blocks it the run retries automatically on residential. Pin RESIDENTIAL only if you want to skip that cheaper first attempt.",
+      "description": "Proxy settings for scraping. Apify Proxy or a suitable custom proxy is required for cloud runs because Booking.com challenges direct Apify cloud traffic. Leave groups empty for the default datacenter pool. Fast mode can retry on residential when needed; detailed mode does not use Apify Residential because its transfer cost would require an uncompetitive result price. Custom proxy URLs remain supported.",
       "editor": "proxy",
       "default": {
         "useApifyProxy": true
       }
     }
-  },
-  "required": ["destinations"]
+  }
 }

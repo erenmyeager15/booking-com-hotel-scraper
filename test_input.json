@@ -2,10 +2,15 @@
   "destinations": ["London, United Kingdom"],
   "adults": 2,
   "rooms": 1,
+  "childrenAges": [],
   "propertyTypes": [],
+  "stars": [],
   "minReviewScore": 0,
-  "maxResults": 25,
+  "maxResults": 1,
   "currency": "USD",
+  "language": "en-us",
+  "scrapeDetails": true,
+  "maxImages": 10,
   "proxyConfiguration": {
     "useApifyProxy": true
   }
