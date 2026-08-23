@@ -14,9 +14,8 @@
   photos, address, coordinates, description, check-in/out times, and surroundings.
 - Fast mode keeps the HTTP-first path. Detailed mode intentionally uses property-page
   browser requests and charges only after the enriched record is saved.
-- Unit coverage is green. Live residential verification, pagination yield, detailed
-  field coverage, duration, and platform cost must be measured before updating the
-  older cost model below.
+- Verification now passes with **23/23 tests**, TypeScript compilation, and valid
+  input, dataset, and output schemas.
 
 Live one-result detailed proofs now supersede that pending note:
 
@@ -25,14 +24,33 @@ Live one-result detailed proofs now supersede that pending note:
   residential proxy component alone was about $0.0715 at the documented $8/GB rate.
 - Build **1.0.38**, datacenter-first run `kvSRvjY88YtoZXo9l`: succeeded, 53.1s,
   1 enriched hotel, 18 room options, 0 failures, zero residential transfer, about
-  $0.00215 total measured platform usage.
+  $0.00393 after usage settled. The lower value visible immediately after the run
+  was provisional and must not be used for pricing.
+- Build **1.0.40**, datacenter run `h3KfctiLe24VLtX2k`: succeeded in about 55s with
+  1 enriched hotel, 27 room options, 0 failed requests, and zero residential
+  transfer. Settled platform usage is about **$0.00390**. This proof exposed a
+  room-currency label mismatch; the parser now prefers the requested currency's
+  symbol-and-number pair, with a regression test covering the observed layout.
+- Final code and documentation are deployed as Apify build **1.0.42**
+  (`nfOehi8aZy3XBnSdL`) and pushed to GitHub as commit **234521f**. No additional
+  paid run was started after the deterministic currency-parser fix.
 
-The final price model keeps fast rows at $0.002 and adds one competitive $0.005
-detailed row. Detailed mode stays on datacenter proxy (or a user-supplied custom
-proxy), because the residential proof would require roughly $0.12 per row to remain
-sustainable and that price is not commercially viable. Fast mode retains its bounded
-residential fallback. The code falls back to the existing event during Apify's
-required 14-day notice period for the newly added paid event.
+The product design keeps fast rows at **$0.002** and proposes one competitive
+**$0.005 detailed row**. Detailed mode stays on datacenter proxy (or a user-supplied
+custom proxy), because the residential proof would require an uncompetitive result
+price. Explicit Apify Residential input is rejected for detailed mode; fast mode
+retains its bounded residential fallback. The code falls back to the existing event
+when the detailed event is not active.
+
+The proposed `detailed-hotel-scraped` event is **not active in live monetization**.
+Live Actor pricing remains `hotel-scraped` at **$0.002** plus the **$0.00005** Actor
+start event. Do not claim the $5 tier is published. At the settled one-result cost of
+about $0.00390, a $0.005 event leaves only about $0.00010 after Apify's 20% share,
+before variability. Activation is gated on either a repeatable lower settled cost,
+batch proof with acceptable per-hotel economics, or another optimization. The public
+Store title, short description, and detailed example also remain pending publication;
+the verified public title is still `Booking.com Hotel Scraper - $2/1k, Prices &
+Availability`.
 
 ## Phase 4: Repriced to $2.00 / 1,000 (2026-08-13)
 
