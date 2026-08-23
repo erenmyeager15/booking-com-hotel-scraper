@@ -104,6 +104,13 @@
           "eventPriceUsd": 0.005,
           "isPrimaryEvent": false,
           "isOneTimeEvent": false
+        },
+        "detailed-run-started": {
+          "eventTitle": "Detailed mode setup",
+          "eventDescription": "Charged once per detailed-mode run for browser startup and Booking.com session setup.",
+          "eventPriceUsd": 0.002,
+          "isPrimaryEvent": false,
+          "isOneTimeEvent": true
         }
       }
     }

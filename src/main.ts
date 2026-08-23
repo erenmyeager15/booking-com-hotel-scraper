@@ -11,6 +11,7 @@ import {
 } from './input.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
+const DETAILED_RUN_STARTED_EVENT = 'detailed-run-started';
 const PAGE_SIZE = 25;
 
 await Actor.init();
@@ -48,6 +49,10 @@ const proxyTiers = buildProxyTiers(input.proxyConfiguration, !input.scrapeDetail
 
 const chargedSearches: SearchSource[] = [];
 let searchChargeLimitReached = false;
+
+if (input.scrapeDetails && !(await chargeDetailedRunSetup())) {
+  await Actor.fail('Maximum cost per run was reached before detailed-mode browser setup.');
+}
 
 for (const source of searchSources) {
   const charged = await chargeDestinationSearch();
@@ -291,5 +296,18 @@ async function chargeDestinationSearch(): Promise<boolean> {
   if (pricingInfo.perEventPrices[SEARCH_STARTED_EVENT] === undefined) return true;
 
   const chargeResult = await Actor.charge({ eventName: SEARCH_STARTED_EVENT });
+  return chargeResult.chargedCount >= 1;
+}
+
+async function chargeDetailedRunSetup(): Promise<boolean> {
+  const pricingInfo = Actor.getChargingManager().getPricingInfo();
+  if (!pricingInfo.isPayPerEvent) return true;
+
+  // Keep builds safe during Apify's pricing-transition window. Until the new
+  // event becomes active, detailed runs continue without trying to charge an
+  // undefined event.
+  if (pricingInfo.perEventPrices[DETAILED_RUN_STARTED_EVENT] === undefined) return true;
+
+  const chargeResult = await Actor.charge({ eventName: DETAILED_RUN_STARTED_EVENT });
   return chargeResult.chargedCount >= 1;
 }

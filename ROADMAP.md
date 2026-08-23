@@ -33,24 +33,30 @@ Live one-result detailed proofs now supersede that pending note:
   symbol-and-number pair, with a regression test covering the observed layout.
 - Final code and documentation are deployed as Apify build **1.0.42**
   (`nfOehi8aZy3XBnSdL`) and pushed to GitHub as commit **234521f**. No additional
-  paid run was started after the deterministic currency-parser fix.
+  paid run had been started after the deterministic currency-parser fix at that point.
+- Build **1.0.42**, datacenter run `JkSN5ORejRLfnApwT`: succeeded in 51.2s with
+  1 enriched hotel, 27 room options, 0 failed requests, zero residential transfer,
+  correct USD labels, and about **$0.004** settled platform usage. Memory averaged
+  542.5 MB and peaked at 740.2 MB, confirming that the Playwright path should retain
+  its 1,024 MB allocation rather than risk a 512 MB container.
 
-The product design keeps fast rows at **$0.002** and proposes one competitive
-**$0.005 detailed row**. Detailed mode stays on datacenter proxy (or a user-supplied
+The product design keeps fast rows at **$0.002** and proposes a competitive
+**$0.005 detailed row**, plus a **$0.002 one-time detailed-mode setup event**. The
+setup charge covers the browser/session startup that dominates one-result runs while
+keeping bulk pricing effectively at $5/1,000. At one result, creator revenue after
+Apify's 20% share is $0.0056 against about $0.004 settled usage; the measured margin
+is therefore about 29%. Detailed mode stays on datacenter proxy (or a user-supplied
 custom proxy), because the residential proof would require an uncompetitive result
 price. Explicit Apify Residential input is rejected for detailed mode; fast mode
-retains its bounded residential fallback. The code falls back to the existing event
-when the detailed event is not active.
+retains its bounded residential fallback. The code safely skips new events until they
+become active.
 
-The proposed `detailed-hotel-scraped` event is **not active in live monetization**.
-Live Actor pricing remains `hotel-scraped` at **$0.002** plus the **$0.00005** Actor
-start event. Do not claim the $5 tier is published. At the settled one-result cost of
-about $0.00390, a $0.005 event leaves only about $0.00010 after Apify's 20% share,
-before variability. Activation is gated on either a repeatable lower settled cost,
-batch proof with acceptable per-hotel economics, or another optimization. The public
-Store title, short description, and detailed example also remain pending publication;
-the verified public title is still `Booking.com Hotel Scraper - $2/1k, Prices &
-Availability`.
+The proposed `detailed-hotel-scraped` and `detailed-run-started` events are **not yet
+active in live monetization**. Live Actor pricing remains `hotel-scraped` at **$0.002**
+plus the **$0.00005** Actor start event. Do not claim the $5 tier is published until
+the Console change is saved. The public Store title, short description, and detailed
+example also remain pending publication; the verified public title is still
+`Booking.com Hotel Scraper - $2/1k, Prices & Availability`.
 
 ## Phase 4: Repriced to $2.00 / 1,000 (2026-08-13)
 

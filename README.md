@@ -172,12 +172,13 @@ This Actor uses Pay Per Event pricing.
 | Actor start | $0.00005 per GB, minimum one event |
 | Fast hotel record | $0.002 ($2 / 1,000) |
 | Detailed hotel record | $0.005 ($5 / 1,000) |
+| Detailed mode setup | $0.002 once per detailed run |
 
-Fast mode costs **$2.00 per 1,000 saved hotel records**. Detailed mode costs **$5.00 per 1,000** because it opens one extra property page and returns substantially more data. Every row reports its `billingTier`.
+Fast mode costs **$2.00 per 1,000 saved hotel records**. Detailed mode costs **$5.00 per 1,000**, plus a **$0.002 one-time setup charge per run**, because it starts a browser session and opens one extra property page per hotel. The setup charge protects small-run reliability without inflating bulk per-result pricing. Every row reports its `billingTier`.
 
 Platform runtime and the default proxy are included in these event prices and are not added separately to the user's bill. Detailed mode uses the datacenter pool (or a user-supplied custom proxy), keeping its price predictable and competitive.
 
-The detailed events are new. Apify applies its standard 14-day notice period before new paid events take effect; during that transition, detailed rows safely use the existing fast-result event instead of an undefined event price.
+The detailed events are new. Apify applies its standard 14-day notice period before new paid events take effect; during that transition, the Actor safely skips an undefined setup event and detailed rows use the existing fast-result event.
 
 For a first detailed test, use one destination and `maxResults: 1`. For bulk collection, use fast mode and a full page such as 25 results. Set a maximum run cost in Apify when you want a hard ceiling on fast mode's automatic residential fallback.
 
