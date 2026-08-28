@@ -65,6 +65,14 @@ Console on **2026-08-24** and are scheduled to become effective on **2026-09-06 
 title is now `Booking.com Scraper - $2/1k, Rooms & Live Prices`; its description and
 custom SEO are published, and the detailed London example above is live and verified.
 
+**2026-08-28 discount follow-up:** the Publication page correctly blocks additional
+price edits until the scheduled change becomes effective on **2026-09-06 at 19:08
+UTC**. Do not replace or delay the pending event split merely to add discounts. After
+activation, add conservative Store tiers while keeping FREE pricing unchanged:
+Fast $0.002 / $0.0019 / $0.0018 / $0.0017 and Detailed $0.005 / $0.00475 /
+$0.0045 / $0.00425 for FREE / Bronze / Silver / Gold. Keep the $0.002 Detailed setup
+and $0.00005 Actor start flat. Recheck measured paid-run margin before confirmation.
+
 ## Phase 4: Repriced to $2.00 / 1,000 (2026-08-13)
 
 The owner changed the Console price from **$0.004 to $0.002 per `hotel-scraped`**
