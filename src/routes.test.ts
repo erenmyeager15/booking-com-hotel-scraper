@@ -15,14 +15,69 @@ import {
   decidePageProgress,
   extractIdFromHref,
   extractPropertyFromSnapshot,
+  hasSearchContext,
+  hasUsableStayPrice,
   normalizeBookingUrl,
   parseMoney,
   parseReviewCount,
   parseReviewScore,
   parseStarRating,
   selectDetailedResultEvent,
+  searchRequestKey,
 } from './routes.js';
 import type { SearchState } from './types.js';
+
+test('keeps browser retries distinct across proxy tiers and searches', () => {
+  const base = { destination: 'London, United Kingdom', offset: 0 } as SearchState;
+  assert.notEqual(
+    searchRequestKey('browser', { ...base, requestNamespace: '0:0' }),
+    searchRequestKey('browser', { ...base, requestNamespace: '1:0' }),
+  );
+  assert.notEqual(
+    searchRequestKey('browser', { ...base, requestNamespace: '1:0' }),
+    searchRequestKey('browser', { ...base, requestNamespace: '1:1' }),
+  );
+  assert.notEqual(
+    searchRequestKey('browser', { ...base, requestNamespace: '1:0' }),
+    searchRequestKey('http', { ...base, requestNamespace: '1:0' }),
+  );
+});
+
+test('does not mistake a redirected, context-free search shell for an empty destination', () => {
+  const state = {
+    destination: 'London, United Kingdom',
+    checkIn: '2026-10-23',
+    checkOut: '2026-10-24',
+    adults: 2,
+    rooms: 1,
+    propertyTypes: [],
+    minReviewScore: 0,
+    maxResults: 25,
+    currency: 'USD',
+    collectedCount: 0,
+    examinedCount: 0,
+    seenIds: [],
+    offset: 0,
+    pageSize: 25,
+    hasMore: true,
+  } satisfies SearchState;
+  assert.equal(hasSearchContext(buildSearchUrl(state), state), true);
+  assert.equal(hasSearchContext('https://www.booking.com/searchresults.html', state), false);
+  assert.equal(hasSearchContext('https://www.booking.com/searchresults.html?ss=Paris', state), false);
+});
+
+test('requires an actual stay price before saving a fast-mode result', () => {
+  assert.equal(hasUsableStayPrice({ totalPrice: null, pricePerNight: null }), false);
+  assert.equal(hasUsableStayPrice({ totalPrice: 0, pricePerNight: null }), false);
+  assert.equal(hasUsableStayPrice({ totalPrice: 180, pricePerNight: null }), true);
+});
+
+test('parses Booking prices displayed with bare and localized dollar signs', () => {
+  assert.equal(parseMoney('$280'), 280);
+  assert.equal(parseMoney('US$280'), 280);
+  assert.equal(parseMoney('C$2,300'), 2300);
+  assert.equal(parseMoney('A$150'), 150);
+});
 
 const fixedToday = new Date(2026, 6, 1);
 

@@ -8,11 +8,14 @@ import {
   countNights,
   decidePageProgress,
   extractIdFromHref,
+  hasSearchContext,
+  hasUsableStayPrice,
   normalizeBookingUrl,
   parseMoney,
   parseReviewCount,
   parseReviewScore,
   parseStarRating,
+  searchRequestKey,
 } from './routes.js';
 
 const HOTEL_SCRAPED_EVENT = 'hotel-scraped';
@@ -50,7 +53,7 @@ export async function runHttpFastPath(
 
   const queueBrowserFallback = (state: SearchState): void => {
     const url = buildSearchUrl(state);
-    const uniqueKey = `browser:${state.destination}:${state.offset}`;
+    const uniqueKey = searchRequestKey('browser', state);
     fallbackRequests.set(uniqueKey, {
       url,
       uniqueKey,
@@ -84,13 +87,26 @@ export async function runHttpFastPath(
         return;
       }
       if (documentState === 'no-results') {
-        if (state.collectedCount === 0) noResultDestinations.add(state.destination);
-        state.hasMore = false;
+        if (hasSearchContext(request.loadedUrl ?? request.url, state)) {
+          if (state.collectedCount === 0) noResultDestinations.add(state.destination);
+          state.hasMore = false;
+        } else {
+          queueBrowserFallback(state);
+        }
         return;
       }
 
       const cards = $('[data-testid="property-card"], [data-testid="property-card-container"]');
       if (cards.length === 0) {
+        queueBrowserFallback(state);
+        return;
+      }
+
+      if (!cards.toArray().some((element) => {
+        const card = $(element);
+        return parseMoney(card.find('[data-testid="price-and-discounted-price"], '
+          + '[data-testid="price-for-x-nights"], [data-testid="price-per-night"]').first().text()) !== null;
+      })) {
         queueBrowserFallback(state);
         return;
       }
@@ -105,6 +121,7 @@ export async function runHttpFastPath(
 
         const record = extractPropertyFromHtml($(element), state);
         if (!record?.propertyId) continue;
+        if (!hasUsableStayPrice(record)) continue;
         extractedOnPage++;
 
         if (state.seenIds.includes(record.propertyId)) {
@@ -178,7 +195,7 @@ export async function runHttpFastPath(
       const nextUrl = nextPageUrl ?? buildSearchUrl(state, currentUrl);
       await activeCrawler.addRequests([{
         url: nextUrl,
-        uniqueKey: `http:${state.destination}:${state.offset}`,
+        uniqueKey: searchRequestKey('http', state),
         userData: { state },
         label: 'search',
       }]);

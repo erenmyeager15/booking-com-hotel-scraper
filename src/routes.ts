@@ -13,6 +13,30 @@ export const MAX_PAGES_PER_DESTINATION = 40;
 export type BookingDocumentState = 'normal' | 'blocked' | 'no-results';
 export type PageProgressAction = 'next' | 'stop' | 'retry';
 
+export function searchRequestKey(kind: 'http' | 'browser', state: SearchState): string {
+  return `${kind}:${state.requestNamespace ?? state.destination}:${state.offset}`;
+}
+
+export function hasSearchContext(currentUrl: string, state: SearchState): boolean {
+  try {
+    const current = new URL(currentUrl);
+    const expected = state.searchUrl ? new URL(state.searchUrl) : new URL(buildSearchUrl(state));
+    const destination = expected.searchParams.get('ss');
+    if (destination) {
+      return current.searchParams.get('ss')?.trim().toLowerCase() === destination.trim().toLowerCase();
+    }
+    const destinationId = expected.searchParams.get('dest_id');
+    return Boolean(destinationId && current.searchParams.get('dest_id') === destinationId);
+  } catch {
+    return false;
+  }
+}
+
+export function hasUsableStayPrice(record: Pick<HotelRecord, 'totalPrice' | 'pricePerNight'>): boolean {
+  return (record.totalPrice !== null && record.totalPrice > 0)
+    || (record.pricePerNight !== null && record.pricePerNight > 0);
+}
+
 export interface PropertyCardSnapshot {
   href: string | null;
   propertyId: string | null;
@@ -183,7 +207,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       session?.retire();
       throw new SessionError(`BOOKING_BLOCKED_WHILE_WAITING: ${state.destination} offset ${state.offset}`);
     }
-    if (documentState === 'no-results' || state.offset > 0) {
+    if ((documentState === 'no-results' && hasSearchContext(page.url(), state)) || state.offset > 0) {
       markNoResultIfComplete(state);
       log.info(`No more Booking.com properties at offset ${state.offset} for "${state.destination}".`);
       state.hasMore = false;
@@ -205,13 +229,22 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       session?.retire();
       throw new SessionError(`BOOKING_BLOCKED_EMPTY_CARDS: ${state.destination} offset ${state.offset}`);
     }
-    if (documentState === 'no-results' || state.offset > 0) {
+    if ((documentState === 'no-results' && hasSearchContext(page.url(), state)) || state.offset > 0) {
       markNoResultIfComplete(state);
       state.hasMore = false;
       return;
     }
     session?.retire();
     throw new Error(`EMPTY_PROPERTY_CARD_SET: ${state.destination} offset ${state.offset}`);
+  }
+
+  // Some Booking responses hydrate hotel names before rates. Do not charge for
+  // a whole page of price-less cards when the advertised data is still missing.
+  if (!state.scrapeDetails) {
+    await page.waitForSelector(
+      '[data-testid="price-and-discounted-price"], [data-testid="price-for-x-nights"]',
+      { timeout: 7000 },
+    ).catch(() => null);
   }
 
   // Read every visible card in one browser round trip. Field-by-field Locator
@@ -276,6 +309,18 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     }));
   });
 
+  if (!state.scrapeDetails && !cardSnapshots.some((snapshot) =>
+    parseMoney(snapshot.totalText) !== null || parseMoney(snapshot.perNightText) !== null
+  )) {
+    log.warning('Booking.com returned property cards without any stay prices; trying the next proxy tier.', {
+      loadedUrl: page.url(),
+      firstCardText: cardSnapshots[0]?.cardText?.slice(0, 300) ?? null,
+    });
+    session?.retire();
+    request.noRetry = true;
+    throw new Error(`BOOKING_PRICES_NOT_RENDERED: ${state.destination} offset ${state.offset}`);
+  }
+
   let newOnPage = 0;
   let extractedOnPage = 0;
   let duplicateOnPage = 0;
@@ -291,6 +336,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     const record = extractPropertyFromSnapshot(snapshot, state);
 
     if (!record?.propertyId) continue;
+    if (!state.scrapeDetails && !hasUsableStayPrice(record)) continue;
     extractedOnPage++;
 
     if (state.seenIds.includes(record.propertyId)) {
@@ -395,7 +441,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
 
   await crawler.addRequests([{
     url: nextUrl,
-    uniqueKey: `browser:${state.destination}:${state.offset}`,
+    uniqueKey: searchRequestKey('browser', state),
     userData: { state },
     label: 'search',
   }]);
@@ -494,7 +540,7 @@ async function inspectBookingPage(page: Page): Promise<BookingDocumentState> {
     hasChallengeElement: Boolean(document.querySelector(
       'iframe[src*="captcha"], [data-testid*="captcha"], #challenge-running, '
       + '#challenge-container, script[src*="/__challenge_"], [class*="captcha"]',
-    )),
+    )) || Boolean((window as typeof window & { awsWafCookieDomainList?: string[] }).awsWafCookieDomainList),
   })).catch(() => ({ title: '', bodyText: '', hasChallengeElement: false }));
 
   return classifyBookingDocument(
@@ -719,7 +765,7 @@ export function parseMoney(text: string | null): number | null {
   const normalized = cleanText(text);
   if (!normalized) return null;
 
-  const currencyPattern = String.raw`(?:US\$|USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|BRL|MXN|SEK|NOK|DKK|NZD|KRW|SGD|MYR|THB|TRY|\u20ac|\u00a3|\u00a5|\u20b9|Rs\.?)`;
+  const currencyPattern = String.raw`(?:(?:US|C|A|NZ)?\$|USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|BRL|MXN|SEK|NOK|DKK|NZD|KRW|SGD|MYR|THB|TRY|\u20ac|\u00a3|\u00a5|\u20b9|Rs\.?)`;
   const before = new RegExp(`${currencyPattern}\\s*([0-9][0-9,.]*)`, 'i');
   const after = new RegExp(`([0-9][0-9,.]*)\\s*${currencyPattern}`, 'i');
   const match = normalized.match(before) ?? normalized.match(after);

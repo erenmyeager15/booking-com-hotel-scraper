@@ -100,7 +100,7 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   console.info(`Starting ${input.scrapeDetails ? 'detailed' : 'fast'} Booking.com scrape for ${chargedSearches.length} search source(s) using ${tier.label}.`);
 
   const initialRequests: SearchRequest[] = chargedSearches.map((source, sourceIndex) => {
-    const state = createSearchState(source);
+    const state = createSearchState(source, `${tierIndex}:${sourceIndex}`);
     return {
       url: buildSearchUrl(state),
       uniqueKey: `search:${tierIndex}:${sourceIndex}:0`,
@@ -179,7 +179,7 @@ await Actor.setValue('OUTPUT', {
 
 await Actor.exit();
 
-function createSearchState(source: SearchSource): SearchState {
+function createSearchState(source: SearchSource, requestNamespace: string): SearchState {
   const url = source.searchUrl ? new URL(source.searchUrl) : null;
   const urlCheckIn = validDateParam(url?.searchParams.get('checkin'));
   const urlCheckOut = validDateParam(url?.searchParams.get('checkout'));
@@ -189,6 +189,7 @@ function createSearchState(source: SearchSource): SearchState {
 
   return {
     destination: source.destination,
+    requestNamespace,
     ...(source.searchUrl ? { searchUrl: source.searchUrl } : {}),
     checkIn: urlCheckIn ?? input.checkIn,
     checkOut: urlCheckOut ?? input.checkOut,

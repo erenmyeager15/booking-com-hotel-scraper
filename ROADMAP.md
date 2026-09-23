@@ -1,5 +1,30 @@
 # Booking.com Hotel Scraper Roadmap
 
+## 2026-09-23: automated QA repair and price-quality check
+
+- Apify flagged the Actor under maintenance after prefilled London run
+  `8hvibnVJkJn6VWtBq` failed with no records. The browser fallback reused a
+  request-queue key across proxy tiers, so its residential retry was skipped.
+  Search request keys now include proxy tier and search source.
+- Booking also serves an AWS WAF challenge or a stripped search shell at times.
+  A stripped URL is no longer accepted as a genuine empty search. Fast mode waits
+  for rates and rejects price-less cards instead of charging them as complete
+  hotel results.
+- The same cards used bare dollar signs (`$280`) rather than `US$280`; the money
+  parser now accepts bare and localized dollar signs. This was the immediate
+  reason a green datacenter run had 25 records with no prices.
+- Build **1.0.46**, default-input run `Ow2PDfxTO4wWLoYZA`: **SUCCEEDED in 35s**,
+  **25/25 priced records**, zero failed requests, zero residential transfer,
+  and approximately **$0.00131 initial platform usage**. The prefilled QA test
+  must still clear Apify's maintenance flag on its own schedule; this owner run
+  is a functional proof, not confirmation that the flag has cleared.
+- Margin caveat: diagnostic residential-fallback run `dIQTnqEvT9MpGoODT`
+  returned 15 priced records but cost about **$0.083 initial usage**, far above
+  the $0.030 gross result charges at the current $2/1,000 rate. It paginated to
+  a second page and yielded no further records. Do not claim the residential
+  path is profitable based on the successful datacenter proof; reduce/disable
+  costly fallback pagination or revise its pricing after further measurement.
+
 ## Phase 5: URL mode, real pagination, and detailed property data (2026-08-23)
 
 - Added Booking.com search-URL mode that preserves website filters, dates, occupancy,

@@ -112,6 +112,8 @@ export interface HotelRecord {
 
 export interface SearchState {
   destination: string;
+  /** Distinguishes proxy tiers and duplicate destination searches in Crawlee's shared request queue. */
+  requestNamespace?: string;
   searchUrl?: string;
   checkIn: string;
   checkOut: string;
