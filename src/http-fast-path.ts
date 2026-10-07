@@ -5,6 +5,7 @@ import type { HotelRecord, SearchState } from './types.js';
 import { addRateEvidence } from './rate-evidence.js';
 import { pushHotelRecord } from './records.js';
 import { restoreSearchState } from './search-state.js';
+import { proxyConfigurationProblem } from './proxy-check.js';
 import {
   buildSearchUrl,
   classifyBookingDocument,
@@ -35,6 +36,7 @@ export interface HttpFastPathResult {
   noResultDestinationCount: number;
   spendingLimitReached: boolean;
   fallbackRequests: SearchRequest[];
+  proxyError: string | null;
 }
 
 interface CheerioSelection {
@@ -51,6 +53,7 @@ export async function runHttpFastPath(
 ): Promise<HttpFastPathResult> {
   let chargedHotelCount = 0;
   let spendingLimitReached = false;
+  let proxyError: string | null = null;
   const noResultDestinations = new Set<string>();
   const fallbackRequests = new Map<string, SearchRequest>();
 
@@ -74,12 +77,16 @@ export async function runHttpFastPath(
     },
     maxConcurrency: 3,
     maxRequestRetries: 0,
+    maxSessionRotations: 1,
+    errorHandler: async ({ request }, error) => {
+      if (proxyConfigurationProblem(error)) request.noRetry = true;
+    },
     requestHandlerTimeoutSecs: 30,
     navigationTimeoutSecs: 20,
     additionalMimeTypes: ['application/xhtml+xml'],
     requestHandler: async ({ $, request, crawler: activeCrawler, log }) => {
       const state = restoreSearchState(request.userData.state as SearchState);
-      if (spendingLimitReached || !state.hasMore) return;
+      if (proxyError || spendingLimitReached || !state.hasMore) return;
 
       const documentState = classifyBookingDocument(
         $('title').text(),
@@ -224,6 +231,13 @@ export async function runHttpFastPath(
     },
     failedRequestHandler: async ({ request, log }, error) => {
       const state = restoreSearchState(request.userData.state as SearchState);
+      const problem = proxyConfigurationProblem(error);
+      if (problem) {
+        proxyError = problem;
+        if (state.coverage) { state.coverage.status = 'failed'; state.coverage.reason = 'invalid_proxy_configuration'; }
+        state.hasMore = false;
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       log.warning(`HTTP fast path unavailable; using browser fallback for ${state.destination}.`, {
         error: message,
@@ -238,7 +252,8 @@ export async function runHttpFastPath(
     chargedHotelCount,
     noResultDestinationCount: noResultDestinations.size,
     spendingLimitReached,
-    fallbackRequests: [...fallbackRequests.values()],
+    fallbackRequests: proxyError ? [] : [...fallbackRequests.values()],
+    proxyError,
   };
 }
 

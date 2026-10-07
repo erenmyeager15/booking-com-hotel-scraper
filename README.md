@@ -108,11 +108,13 @@ Set these options alongside your usual destination or saved search URL:
   "monitorName": "london-november-stay",
   "priceChangeThresholdPercent": 5,
   "observationHistoryLimit": 10,
-  "proxyConfiguration": { "useApifyProxy": true, "apifyProxyCountry": "GB" }
+  "proxyConfiguration": { "useApifyProxy": true, "apifyProxyCountry": "US" }
 }
 ```
 
 Keep the same name, stay dates, guest ages, market, currency and filters on repeats. The first comparable observation is a baseline. Later rows report `unchanged`, `price_drop` or `price_increase`; moves reaching your threshold have `alert: true`. Send those fields to your own integration if you want notifications. The Actor does not send messages.
+
+Choose a proxy country your account actually supports. The example uses US, which is independent of the London destination or GBP display currency. Datacenter access does not include every country; the Actor checks the proxy tunnel before browser setup and does not silently select another market. Removing the proxy country permits ordinary collection, but disables comparable rate alerts.
 
 Unknown or ambiguous currency, missing tax context, a changed observed offer, an unverified search context or an unspecified proxy market produces `not_comparable` and no price alert. A dollar sign alone is ambiguous even when USD was requested. Displayed hotel offers can still change room type or conditions the search card does not reveal; this is a hotel-offer comparison, not a guarantee of identical room products or final checkout totals. Missing hotels are not treated as sold out.
 
@@ -224,6 +226,7 @@ For a first detailed test, use one destination and `maxResults: 1`. For bulk col
 ## Reliability and cost control
 
 - Direct Apify cloud traffic is rejected early because Booking.com commonly presents a verification challenge.
+- Unavailable proxy countries and proxy authentication errors fail early with guidance, rather than ten repeated HTTP attempts followed by an unnecessary browser fallback.
 - With the default proxy input, fast mode stays on the lower-cost datacenter pool. A one-page Residential retry requires `allowResidentialFallback: true` and happens only if the first tier produces no usable data.
 - Detailed mode stays on datacenter proxy to keep its fixed $5/1,000 price sustainable. Apify Residential is rejected for detailed runs; custom proxy URLs remain supported.
 - Explicit Apify proxy groups and custom proxy URLs are always respected.

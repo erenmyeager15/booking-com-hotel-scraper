@@ -12,6 +12,7 @@ import {
 } from './input.js';
 import { initializeMonitoring, finishMonitoring, monitoringCounts, getSavedHotelCount } from './records.js';
 import { restoreSearchState } from './search-state.js';
+import { assertProxyAvailable, ProxyConfigurationError, proxyConfigurationProblem } from './proxy-check.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const DETAILED_RUN_STARTED_EVENT = 'detailed-run-started';
@@ -25,7 +26,7 @@ try {
   await finishMonitoring().catch(() => null);
   const message = error instanceof Error ? error.message : String(error);
   const existingOutput = await Actor.getValue<Record<string, unknown>>('OUTPUT').catch(() => null);
-  await Actor.setValue('OUTPUT', { ...existingOutput, status: existingOutput?.status ?? 'failed', message, results: getSavedHotelCount(),
+  await Actor.setValue('OUTPUT', { ...existingOutput, status: existingOutput?.status ?? (error instanceof ProxyConfigurationError ? 'invalid_proxy_configuration' : 'failed'), message, results: getSavedHotelCount(),
     hint: 'Review the dates, search URL, proxy configuration and run log. Expired dates and incomplete child ages are rejected before navigation.' });
   await Actor.fail(message);
 }
@@ -60,7 +61,6 @@ if (requiresCloudProxy(input.proxyConfiguration, isCloudRun)) {
     + 'Keep Apify Proxy enabled or provide a custom proxy URL.',
   );
 }
-await initializeMonitoring(input);
 
 // Residential fallback is an explicit fast-mode choice, capped to one page. It
 // can improve access but is not guaranteed to be profitable at the fixed price.
@@ -68,12 +68,6 @@ const proxyTiers = buildProxyTiers(input.proxyConfiguration, !input.scrapeDetail
 
 const chargedSearches: SearchSource[] = [];
 let searchChargeLimitReached = false;
-
-if (input.scrapeDetails && !(await chargeDetailedRunSetup())) {
-  await Actor.setValue('OUTPUT', { status: 'stopped_charge_limit', results: 0, spendingLimitReached: true,
-    message: 'Maximum charge was reached before detailed-mode browser setup.' });
-  return;
-}
 
 for (const source of searchSources) {
   const charged = await chargeDestinationSearch();
@@ -99,6 +93,7 @@ let chargedHotelCount = 0;
 let noResultDestinationCount = 0;
 let spendingLimitReached = false;
 let finalStates: SearchState[] = [];
+let monitoringInitialized = false;
 
 // Retry another tier only when explicitly enabled and nothing was saved. Never
 // restart productive searches on a costlier tier just to disguise partial coverage.
@@ -111,13 +106,24 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   let proxyConfiguration: ProxyConfiguration | undefined;
   try {
     proxyConfiguration = await Actor.createProxyConfiguration(tier.options);
+    await assertProxyAvailable(proxyConfiguration, 'countryCode' in tier.options ? tier.options.countryCode : undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (tierIndex < proxyTiers.length - 1) {
       console.warn(`Could not configure ${tier.label}: ${message}. Trying the next proxy option.`);
       continue;
     }
-    throw new Error(`Booking.com proxy configuration failed: ${message}`);
+    throw new ProxyConfigurationError(`Booking.com proxy configuration failed: ${message}`);
+  }
+
+  if (!monitoringInitialized) {
+    await initializeMonitoring(input);
+    monitoringInitialized = true;
+  }
+  if (input.scrapeDetails && !(await chargeDetailedRunSetup())) {
+    await Actor.setValue('OUTPUT', { status: 'stopped_charge_limit', results: 0, spendingLimitReached: true,
+      message: 'Maximum charge was reached before detailed-mode browser setup.' });
+    return;
   }
 
   console.info(`Starting ${input.scrapeDetails ? 'detailed' : 'fast'} Booking.com scrape for ${chargedSearches.length} search source(s) using ${tier.label}.`);
@@ -142,6 +148,7 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
     noResultDestinationCount: 0,
     spendingLimitReached: false,
     fallbackRequests: [] as SearchRequest[],
+    proxyError: null as string | null,
   };
 
   try {
@@ -149,6 +156,7 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
       await crawler.run(initialRequests);
     } else {
       httpResult = await runHttpFastPath(initialRequests, proxyConfiguration);
+      if (httpResult.proxyError) throw new ProxyConfigurationError(httpResult.proxyError);
       if (!httpResult.spendingLimitReached && httpResult.fallbackRequests.length > 0) {
         console.info(`Using browser fallback for ${httpResult.fallbackRequests.length} unresolved Booking.com page(s).`);
         await crawler.run(httpResult.fallbackRequests);
@@ -282,6 +290,9 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
     requestHandler: router,
     maxRequestRetries: 1,
     maxSessionRotations: 1,
+    errorHandler: async ({ request }, error) => {
+      if (proxyConfigurationProblem(error)) request.noRetry = true;
+    },
     retryOnBlocked: true,
     maxConcurrency: 1,
     maxRequestsPerMinute: 30,
