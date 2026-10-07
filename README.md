@@ -1,4 +1,4 @@
-# Booking.com Scraper: Rooms, Prices & Availability
+# Booking.com Scraper: Hotel Rates, Rooms & Change Tracking
 
 Scrape Booking.com hotels and accommodation by destination or by pasting a search-results URL with filters already applied. Export clean hotel records to JSON, CSV, Excel, XML, or HTML, or read them through the Apify API.
 
@@ -6,17 +6,19 @@ Choose **fast mode** for efficient search-result collection. Turn on **detailed 
 
 No Booking.com login or API key is required.
 
+For recurring rate checks, enable `trackChanges` and use a stable `monitorName`, explicit stay dates and a fixed proxy country. Each saved row can include previous prices, percentage changes, alert flags and a bounded observation history. `rateEvidence` explains the displayed price basis, currency and tax signals, and `rateChange.reason` explains why a comparison was skipped.
+
 ## Why use this Actor?
 
 - Search by destination or paste a real Booking.com search URL
 - Preserve the website filters and ordering from pasted URLs
 - Choose fast search-card data or detailed property and room data
 - Search with children ages, star ratings, price range, property type, review score, currency, language, and sorting
-- Follow Booking.com's real next-page links for reliable pagination
+- Follow Booking.com's next-page links, with bounded pagination and explicit coverage limits
 - Deduplicate properties and stop exactly at `maxResults`
-- Use datacenter proxy first; fast mode has a bounded residential fallback
-- Pay only for clean records saved to the dataset
-- Stop safely at the user's maximum run cost
+- Use datacenter proxy first; optional Residential fallback is off by default and limited to one search page
+- Bill hotel result events only for clean records saved; start/setup events are separate
+- Stop hotel result charging at the user's maximum charge (not a hard platform-cost ceiling)
 
 ## Fast mode vs. detailed mode
 
@@ -87,6 +89,37 @@ Apply filters on Booking.com, copy the complete search-results URL, and paste it
 
 URL mode preserves the Booking.com URL's destination, dates, occupancy, currency, language, filters, and ordering while changing only pagination controls. When `searchUrls` is supplied, it takes priority over `destinations`; this prevents the input form's default London destination from starting an unintended extra search.
 
+Missing dates and guest parameters are filled from the normalized input. Explicit expired dates, reversed dates, invalid currency or incomplete child ages are rejected before browsing, with a readable `OUTPUT` error. Explicit dates are never silently changed to another stay. An empty API input uses London and future date defaults; an explicitly empty destination list still needs a valid URL or destination.
+
+## Repeat a rate watch
+
+Set these options alongside your usual destination or saved search URL:
+
+```json
+{
+  "destinations": ["London, United Kingdom"],
+  "checkIn": "2026-11-15",
+  "checkOut": "2026-11-17",
+  "adults": 2,
+  "rooms": 1,
+  "currency": "GBP",
+  "maxResults": 25,
+  "trackChanges": true,
+  "monitorName": "london-november-stay",
+  "priceChangeThresholdPercent": 5,
+  "observationHistoryLimit": 10,
+  "proxyConfiguration": { "useApifyProxy": true, "apifyProxyCountry": "GB" }
+}
+```
+
+Keep the same name, stay dates, guest ages, market, currency and filters on repeats. The first comparable observation is a baseline. Later rows report `unchanged`, `price_drop` or `price_increase`; moves reaching your threshold have `alert: true`. Send those fields to your own integration if you want notifications. The Actor does not send messages.
+
+Unknown or ambiguous currency, missing tax context, a changed observed offer, an unverified search context or an unspecified proxy market produces `not_comparable` and no price alert. A dollar sign alone is ambiguous even when USD was requested. Displayed hotel offers can still change room type or conditions the search card does not reveal; this is a hotel-offer comparison, not a guarantee of identical room products or final checkout totals. Missing hotels are not treated as sold out.
+
+History is private to the run account, Actor and monitor name, bounded to 1,000 property/stay contexts and 2–30 observations per context. Use non-overlapping scheduled runs; simultaneous runs sharing one monitor are not supported. Changing dates creates a different baseline. Future defaults change the stay each day, so use explicit dates for a meaningful repeat comparison.
+
+`OUTPUT` reports search coverage (`complete`, `empty`, `limited` or `failed`), successful page counts, limitation reasons and monitoring counters. Repeated pages, result caps and page caps do not establish complete coverage. Summary and rate evidence use the existing hotel result events; no new paid monitoring event is introduced.
+
 ## Input reference
 
 | Field | Type | Default | Description |
@@ -109,6 +142,12 @@ URL mode preserves the Booking.com URL's destination, dates, occupancy, currency
 | `scrapeDetails` | boolean | `false` | Visit property pages for detailed property and room data |
 | `maxImages` | integer | `10` | Images per property in detailed mode, from 1–50 |
 | `proxyConfiguration` | object | Apify Proxy | Apify or custom proxy settings |
+| `allowResidentialFallback` | boolean | `false` | Fast-mode opt-in fallback, one search page; higher transfer costs can exceed revenue |
+| `maxPagesPerSearch` | integer | `4` | Page limit per search, from 1–40; not a coverage guarantee |
+| `trackChanges` | boolean | `false` | Save and compare bounded observations of displayed hotel offers |
+| `monitorName` | string | empty | Required with tracking; reuse the same 1–64-character name for repeats |
+| `priceChangeThresholdPercent` | number | `5` | Alert flag threshold, from 0–100%; never alerts on unchanged or non-comparable prices |
+| `observationHistoryLimit` | integer | `10` | Retained observations per hotel/stay context, from 2–30 |
 
 ## Output data
 
@@ -160,7 +199,7 @@ Pagination stops when any of these is true:
 - `maxResults` is reached
 - Booking.com has no next page
 - a page contains only already-seen properties
-- 40 pages have been examined for one source
+- `maxPagesPerSearch` pages have been examined (default 4, maximum 40)
 - the user's maximum run cost is reached
 
 ## Pricing
@@ -178,14 +217,14 @@ Fast mode costs **$2.00 per 1,000 saved hotel records**. Detailed mode costs **$
 
 Platform runtime and the default proxy are included in these event prices and are not added separately to the user's bill. Detailed mode uses the datacenter pool (or a user-supplied custom proxy), keeping its price predictable and competitive.
 
-The detailed events are new. Apify applies its standard 14-day notice period before new paid events take effect; during that transition, the Actor safely skips an undefined setup event and detailed rows use the existing fast-result event.
+The code also supports Apify pricing transitions: if the detailed events are not yet active, it skips an undefined setup event and detailed rows use the existing fast-result event. The prices shown above are the intended active event prices; consult the Actor pricing tab for your run.
 
-For a first detailed test, use one destination and `maxResults: 1`. For bulk collection, use fast mode and a full page such as 25 results. Set a maximum run cost in Apify when you want a hard ceiling on fast mode's automatic residential fallback.
+For a first detailed test, use one destination and `maxResults: 1`. For bulk collection, use fast mode and a full page such as 25 results. Apify's maximum charge stops result billing, but it does not guarantee a ceiling on platform costs when requests fail before producing results. Residential transfer is costly, so automatic fallback requires `allowResidentialFallback: true` and stops after one search page. This can reduce coverage; it is reported in `OUTPUT`.
 
 ## Reliability and cost control
 
 - Direct Apify cloud traffic is rejected early because Booking.com commonly presents a verification challenge.
-- With the default proxy input, fast mode tries the lower-cost datacenter pool first and automatically retries with residential only when the first tier produces no usable data.
+- With the default proxy input, fast mode stays on the lower-cost datacenter pool. A one-page Residential retry requires `allowResidentialFallback: true` and happens only if the first tier produces no usable data.
 - Detailed mode stays on datacenter proxy to keep its fixed $5/1,000 price sustainable. Apify Residential is rejected for detailed runs; custom proxy URLs remain supported.
 - Explicit Apify proxy groups and custom proxy URLs are always respected.
 - Blocked sessions are retired and retried with bounded limits.

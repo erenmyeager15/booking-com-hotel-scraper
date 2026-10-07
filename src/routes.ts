@@ -4,6 +4,11 @@ import type { Page } from 'playwright';
 import type { DetailRequestData, HotelRecord, SearchState } from './types.js';
 import { PROPERTY_TYPE_HT_IDS } from './types.js';
 import { enrichHotelRecord, extractBookingDetails } from './details.js';
+import { parseMoney } from './money.js';
+export { parseMoney } from './money.js';
+import { addRateEvidence } from './rate-evidence.js';
+import { pushHotelRecord } from './records.js';
+import { restoreSearchState } from './search-state.js';
 
 export const router = createPlaywrightRouter();
 const HOTEL_SCRAPED_EVENT = 'hotel-scraped';
@@ -23,10 +28,16 @@ export function hasSearchContext(currentUrl: string, state: SearchState): boolea
     const expected = state.searchUrl ? new URL(state.searchUrl) : new URL(buildSearchUrl(state));
     const destination = expected.searchParams.get('ss');
     if (destination) {
-      return current.searchParams.get('ss')?.trim().toLowerCase() === destination.trim().toLowerCase();
+      if (current.searchParams.get('ss')?.trim().toLowerCase() !== destination.trim().toLowerCase()) return false;
+    } else {
+      const destinationId = expected.searchParams.get('dest_id');
+      if (!destinationId || current.searchParams.get('dest_id') !== destinationId) return false;
     }
-    const destinationId = expected.searchParams.get('dest_id');
-    return Boolean(destinationId && current.searchParams.get('dest_id') === destinationId);
+    return current.searchParams.get('checkin') === state.checkIn && current.searchParams.get('checkout') === state.checkOut
+      && current.searchParams.get('group_adults') === String(state.adults)
+      && current.searchParams.get('no_rooms') === String(state.rooms)
+      && current.searchParams.getAll('age').join(',') === (state.childrenAges ?? []).join(',')
+      && current.searchParams.get('selected_currency')?.toUpperCase() === state.currency;
   } catch {
     return false;
   }
@@ -123,7 +134,9 @@ export function resetNoResultDestinations(): void {
 }
 
 router.addHandler('detail', async ({ page, request, crawler, session, log }) => {
-  const { record, state } = request.userData as DetailRequestData;
+  const data = request.userData as DetailRequestData;
+  const record = data.record;
+  const state = restoreSearchState(data.state);
 
   if (spendingLimitReached) {
     request.noRetry = true;
@@ -153,7 +166,10 @@ router.addHandler('detail', async ({ page, request, crawler, session, log }) => 
     ...enrichHotelRecord(record, snapshot, state.maxImages ?? 10),
     billingTier: 'detailed-datacenter',
   };
-  const chargeResult = await Actor.pushData(enrichedRecord, detailedResultEvent());
+  if (!snapshot.title && !snapshot.address && snapshot.roomRows.length === 0 && snapshot.facilities.length === 0) {
+    throw new Error('BOOKING_DETAIL_CONTENT_MISSING');
+  }
+  const chargeResult = await pushHotelRecord(enrichedRecord, detailedResultEvent());
   const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
 
   if (!recordWasSaved) {
@@ -172,7 +188,7 @@ router.addHandler('detail', async ({ page, request, crawler, session, log }) => 
 });
 
 router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
-  const state = request.userData.state as SearchState;
+  const state = restoreSearchState(request.userData.state as SearchState);
 
   if (spendingLimitReached) {
     request.noRetry = true;
@@ -207,7 +223,8 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       session?.retire();
       throw new SessionError(`BOOKING_BLOCKED_WHILE_WAITING: ${state.destination} offset ${state.offset}`);
     }
-    if ((documentState === 'no-results' && hasSearchContext(page.url(), state)) || state.offset > 0) {
+    if (documentState === 'no-results' && hasSearchContext(page.url(), state)) {
+      if (state.coverage) { state.coverage.status = state.collectedCount ? 'complete' : 'empty'; state.coverage.reason = null; }
       markNoResultIfComplete(state);
       log.info(`No more Booking.com properties at offset ${state.offset} for "${state.destination}".`);
       state.hasMore = false;
@@ -229,7 +246,8 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       session?.retire();
       throw new SessionError(`BOOKING_BLOCKED_EMPTY_CARDS: ${state.destination} offset ${state.offset}`);
     }
-    if ((documentState === 'no-results' && hasSearchContext(page.url(), state)) || state.offset > 0) {
+    if (documentState === 'no-results' && hasSearchContext(page.url(), state)) {
+      if (state.coverage) { state.coverage.status = state.collectedCount ? 'complete' : 'empty'; state.coverage.reason = null; }
       markNoResultIfComplete(state);
       state.hasMore = false;
       return;
@@ -325,15 +343,18 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   let extractedOnPage = 0;
   let duplicateOnPage = 0;
   let filteredOnPage = 0;
+  if (state.coverage) state.coverage.successfulPages++;
 
   for (const snapshot of cardSnapshots) {
     if (state.collectedCount >= state.maxResults) {
       log.info(`Reached maxResults ${state.maxResults}`);
+      if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'max_results'; }
       state.hasMore = false;
       return;
     }
 
-    const record = extractPropertyFromSnapshot(snapshot, state);
+    const extracted = extractPropertyFromSnapshot(snapshot, state);
+    const record = extracted ? addRateEvidence(extracted, state, snapshot.totalText, snapshot.perNightText, snapshot.cardText ?? '', hasSearchContext(page.url(), state)) : null;
 
     if (!record?.propertyId) continue;
     if (!state.scrapeDetails && !hasUsableStayPrice(record)) continue;
@@ -373,7 +394,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       continue;
     }
 
-    const chargeResult = await Actor.pushData(record, HOTEL_SCRAPED_EVENT);
+    const chargeResult = await pushHotelRecord(record, HOTEL_SCRAPED_EVENT);
     const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
     if (!recordWasSaved) {
       spendingLimitReached = true;
@@ -397,6 +418,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
 
     if (state.collectedCount >= state.maxResults) {
       log.info(`Reached maxResults ${state.maxResults}`);
+      if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'max_results'; }
       state.hasMore = false;
       return;
     }
@@ -404,7 +426,9 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
 
   state.examinedCount += extractedOnPage;
 
+
   if (state.collectedCount >= state.maxResults) {
+    if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'max_results'; }
     state.hasMore = false;
     return;
   }
@@ -427,9 +451,21 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   }
 
   if (progressAction === 'stop') {
+    if (state.coverage) {
+      const duplicate = newOnPage === 0 && duplicateOnPage > 0;
+      const capped = Math.floor(state.offset / state.pageSize) + 1 >= (state.maxPages ?? MAX_PAGES_PER_DESTINATION);
+      state.coverage.status = duplicate || capped ? 'limited' : state.collectedCount ? 'complete' : 'empty';
+      state.coverage.reason = duplicate ? 'repeated_page' : capped ? 'page_cap' : null;
+    }
     markNoResultIfComplete(state);
     log.info(`Stopping pagination at offset ${state.offset}: cards=${cardCount}, extracted=${extractedOnPage}, new=${newOnPage}, duplicates=${duplicateOnPage}, filtered=${filteredOnPage}.`);
     state.hasMore = false;
+    return;
+  }
+
+  if (Math.floor(state.offset / state.pageSize) + 1 >= (state.maxPages ?? MAX_PAGES_PER_DESTINATION)) {
+    state.hasMore = false;
+    if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'page_cap'; }
     return;
   }
 
@@ -451,7 +487,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
 
 function markNoResultIfComplete(state: SearchState): void {
   if (state.collectedCount === 0 && (state.offset === 0 || state.examinedCount > 0)) {
-    noResultDestinations.add(state.destination);
+    noResultDestinations.add(state.requestNamespace ?? state.destination);
   }
 }
 
@@ -759,20 +795,6 @@ export function extractIdFromHref(href: string | null): string | null {
   if (!href) return null;
   const m = href.match(/\/hotel\/(?:[^/]+\/)?([^.?&/]+)/);
   return m?.[1] ?? null;
-}
-
-export function parseMoney(text: string | null): number | null {
-  const normalized = cleanText(text);
-  if (!normalized) return null;
-
-  const currencyPattern = String.raw`(?:(?:US|C|A|NZ)?\$|USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|BRL|MXN|SEK|NOK|DKK|NZD|KRW|SGD|MYR|THB|TRY|\u20ac|\u00a3|\u00a5|\u20b9|Rs\.?)`;
-  const before = new RegExp(`${currencyPattern}\\s*([0-9][0-9,.]*)`, 'i');
-  const after = new RegExp(`([0-9][0-9,.]*)\\s*${currencyPattern}`, 'i');
-  const match = normalized.match(before) ?? normalized.match(after);
-  if (!match) return null;
-
-  const parsed = Number.parseFloat(match[1].replace(/,/g, ''));
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function parseReviewScore(text: string | null): number | null {

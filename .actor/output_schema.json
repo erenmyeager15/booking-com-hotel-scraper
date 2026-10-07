@@ -9,6 +9,11 @@
       "title": "Booking.com hotel records",
       "description": "Clean dataset items containing Booking.com hotel, price, availability, room, policy, facility, image, location, and property URL data.",
       "template": "{{links.apiDefaultDatasetUrl}}/items"
+    },
+    "summary": {
+      "type": "string", "title": "Search coverage and monitoring summary",
+      "description": "OUTPUT contains saved counts, failed requests, per-search coverage limits and monitoring counters. Missing results are not inferred to be sold out.",
+      "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/OUTPUT"
     }
   }
 }

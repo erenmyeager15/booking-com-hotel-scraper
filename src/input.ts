@@ -2,8 +2,8 @@ import type { ActorInput, NormalizedInput, ProxyConfigInput, SortBy } from './ty
 
 // Datacenter proxy is the default because it is not billed per gigabyte. A measured
 // London run cost $0.00540 on the datacenter pool versus $0.03336 on residential, where
-// residential transfer alone was 90% of the bill. Residential is kept as an automatic
-// fallback tier for when Booking.com challenges the datacenter pool.
+// residential transfer alone was 90% of the bill. Residential fallback now requires
+// an explicit opt-in and is limited to one search page.
 const DEFAULT_PROXY_CONFIGURATION = {
   useApifyProxy: true,
 };
@@ -27,7 +27,7 @@ export function normalizeInput(input: ActorInput = {}, today = new Date()): Norm
   // URL mode is intentionally exclusive. Apify's input UI applies the London
   // destination default even when a user pastes a URL; ignoring destinations when
   // searchUrls are present prevents an unexpected second, paid search.
-  const destinations = searchUrls.length > 0 ? [] : [...new Set((Array.isArray(input.destinations) ? input.destinations : [])
+  const destinations = searchUrls.length > 0 ? [] : [...new Set((Array.isArray(input.destinations) ? input.destinations : ['London, United Kingdom'])
     .map((destination) => cleanText(destination))
     .filter(Boolean))]
     .slice(0, 50);
@@ -73,6 +73,12 @@ export function normalizeInput(input: ActorInput = {}, today = new Date()): Norm
     );
   }
 
+  const trackChanges = input.trackChanges === true;
+  const monitorName = cleanText(input.monitorName);
+  if (trackChanges && !/^[a-zA-Z0-9][a-zA-Z0-9 _-]{0,63}$/.test(monitorName)) {
+    throw new Error('Set monitorName to 1-64 letters, numbers, spaces, underscores or hyphens when trackChanges is enabled.');
+  }
+
   return {
     destinations,
     searchUrls,
@@ -102,6 +108,12 @@ export function normalizeInput(input: ActorInput = {}, today = new Date()): Norm
     scrapeDetails,
     maxImages: clampInteger(input.maxImages, 10, 1, 50),
     proxyConfiguration,
+    allowResidentialFallback: input.allowResidentialFallback === true,
+    maxPagesPerSearch: clampInteger(input.maxPagesPerSearch, 4, 1, 40),
+    trackChanges,
+    monitorName,
+    priceChangeThresholdPercent: clampNumber(input.priceChangeThresholdPercent, 5, 0, 100),
+    observationHistoryLimit: clampInteger(input.observationHistoryLimit, 10, 2, 30),
   };
 }
 
@@ -128,6 +140,7 @@ export function normalizeSearchUrls(value: unknown): string[] {
       throw new Error(`Use a Booking.com search-results URL, not a property or homepage URL: ${rawUrl}`);
     }
 
+    if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Use an HTTPS Booking.com search URL without embedded credentials.');
     url.hash = '';
     urls.push(url.toString());
   }
@@ -173,11 +186,10 @@ export interface ProxyTier {
 
 /**
  * Builds the proxy tiers to try in order. When the caller did not pin a specific
- * Apify proxy group, this returns the cheap datacenter pool first and residential
- * as a fallback, so a datacenter block degrades into a costlier run instead of a
- * failed one. Custom proxy URLs and explicit group choices are never overridden.
+ * Apify proxy group, this returns the cheap datacenter pool. Residential is added
+ * only with explicit consent to the costlier fallback. Pinned groups are preserved.
  */
-export function buildProxyTiers(value: ProxyConfigInput, allowResidentialFallback = true): ProxyTier[] {
+export function buildProxyTiers(value: ProxyConfigInput, allowResidentialFallback = false): ProxyTier[] {
   if (value.proxyUrls?.length) {
     return [{ label: 'custom proxy URLs', options: toProxyConfigurationOptions(value) }];
   }
@@ -210,6 +222,38 @@ export function requiresCloudProxy(value: ProxyConfigInput, isCloudRun: boolean)
   return isCloudRun
     && value.useApifyProxy === false
     && !value.proxyUrls?.length;
+}
+
+/** Fill omitted URL context, but reject expired or contradictory dates before paid navigation. */
+export function resolveSearchContext(searchUrl: string, input: NormalizedInput, today = new Date()) {
+  const url = new URL(searchUrl);
+  const checkIn = url.searchParams.has('checkin') ? validateDateInput(url.searchParams.get('checkin'), 'URL checkin') : input.checkIn;
+  const checkOut = url.searchParams.has('checkout') ? validateDateInput(url.searchParams.get('checkout'), 'URL checkout') : url.searchParams.has('checkin') ? addDays(checkIn, 1) : input.checkOut;
+  if (checkIn <= localDateString(today)) throw new Error('The search URL checkin is expired. Update its dates or omit dates to use future defaults.');
+  if (checkOut <= checkIn) throw new Error('The search URL checkout must be after checkin.');
+  url.searchParams.set('checkin', checkIn); url.searchParams.set('checkout', checkOut);
+  const adults = url.searchParams.has('group_adults') ? strictInteger(url.searchParams.get('group_adults'), 'URL group_adults', 1, 30) : input.adults;
+  const rooms = url.searchParams.has('no_rooms') ? strictInteger(url.searchParams.get('no_rooms'), 'URL no_rooms', 1, 30) : input.rooms;
+  const hasChildren = url.searchParams.has('group_children') || url.searchParams.has('age');
+  const ages = hasChildren ? url.searchParams.getAll('age').map(age => strictInteger(age, 'URL age', 0, 17)) : input.childrenAges;
+  if (ages.length > 10 || (url.searchParams.has('group_children') && strictInteger(url.searchParams.get('group_children'), 'URL group_children', 0, 10) !== ages.length)) {
+    throw new Error('Provide one age parameter for each child in the search URL.');
+  }
+  const currency = (url.searchParams.get('selected_currency') ?? input.currency).toUpperCase();
+  if (!ALLOWED_CURRENCIES.has(currency)) throw new Error('Unsupported selected_currency in Booking.com search URL.');
+  const language = (url.searchParams.get('lang') ?? input.language).toLowerCase();
+  if (!ALLOWED_LANGUAGES.has(language)) throw new Error('Unsupported lang in Booking.com search URL.');
+  url.searchParams.set('group_adults', String(adults)); url.searchParams.set('no_rooms', String(rooms));
+  url.searchParams.set('group_children', String(ages.length)); url.searchParams.delete('age');
+  ages.forEach(age => url.searchParams.append('age', String(age)));
+  url.searchParams.set('selected_currency', currency); url.searchParams.set('lang', language);
+  return { searchUrl: url.toString(), checkIn, checkOut, adults, rooms, childrenAges: ages, currency, language };
+}
+
+function strictInteger(value: unknown, name: string, min: number, max: number): number {
+  if (value === '' || value === null || !/^\d+$/.test(String(value))) throw new Error(`${name} must be an integer from ${min} to ${max}.`);
+  const n = Number(value); if (n < min || n > max) throw new Error(`${name} must be an integer from ${min} to ${max}.`);
+  return n;
 }
 
 export function toProxyConfigurationOptions(value: ProxyConfigInput) {

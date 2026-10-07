@@ -1,5 +1,19 @@
 # Booking.com Hotel Scraper Roadmap
 
+## 2026-10-07: rate evidence, bounded monitoring and cost controls
+
+- Customer dashboard: one paying user, zero results, 0% success in October. The displayed loss was about $0.000015, not a large cash loss. No customer run was shared for debugging, so its exact cause is unknown.
+- Added structured failure OUTPUT for early input/runtime errors, usable empty-API defaults and validation/fill of saved-search dates, guests, child ages and currency before navigation.
+- Added `rateEvidence`: observed price labels, explicit/ambiguous/mismatched currency, tax basis, and verification of the requested search context. Common localized number separators now parse correctly.
+- Added optional `trackChanges`, stable `monitorName`, thresholds and bounded history. Comparisons require compatible stay, occupancy, market, currency, tax evidence and observed terms. No inferred sold-out alerts or automatic messaging.
+- Removed automatic expensive Residential fallback from the default workflow. Optional/explicit Residential fast searches are capped at one page. Default datacenter pagination is bounded by `maxPagesPerSearch` and reports limits and repeated pages instead of claiming full coverage.
+- Later-page blank/challenge shells no longer become successful source exhaustion. Empty detailed pages are not charged as enriched records. Successful records from an interrupted attempt are retained without restarting an entire paid search.
+- Browser allocation remains 1,024 MB; the prior detailed proof peaked around 740 MB. Existing prices remain $2/1,000 fast rows, $5/1,000 detailed rows plus $0.002 detailed setup and $0.00005 Actor start.
+- Local status: 39 tests, the TypeScript build and lint pass. Request-queue copies now retain the same live search progress; a history checkpoint error cannot retry an already billed hotel. Staging, current cost and repeat monitoring proof are pending; no profit guarantee or publication claim is made yet.
+- Remaining deeper work: independently verified large pagination, room/meal/cancellation-identical comparisons, explicit sold-out property checks, date matrices and richer tax amounts. These require source proof and separate economics.
+
+Competitors checked on 7 October: Voyager provides broad property/room data at a $2/1,000 entry price; FalconScrape offers date/length-of-stay/occupancy matrices; Ryan Clinton offers saved rate memory and watchlist signals. Rate history itself is not unique. Position this Actor around inspectable comparison evidence and predictable small repeat searches; do not claim superiority without matched live tests.
+
 ## 2026-09-23: automated QA repair and price-quality check
 
 - Apify flagged the Actor under maintenance after prefilled London run

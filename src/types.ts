@@ -18,6 +18,12 @@ export interface ActorInput {
   scrapeDetails?: boolean;
   maxImages?: number;
   proxyConfiguration?: ProxyConfigInput;
+  allowResidentialFallback?: boolean;
+  maxPagesPerSearch?: number;
+  trackChanges?: boolean;
+  monitorName?: string;
+  priceChangeThresholdPercent?: number;
+  observationHistoryLimit?: number;
 }
 
 export type SortBy = 'popularity' | 'priceLowToHigh' | 'reviewScore' | 'distance';
@@ -49,6 +55,12 @@ export interface NormalizedInput {
   scrapeDetails: boolean;
   maxImages: number;
   proxyConfiguration: ProxyConfigInput;
+  allowResidentialFallback: boolean;
+  maxPagesPerSearch: number;
+  trackChanges: boolean;
+  monitorName: string;
+  priceChangeThresholdPercent: number;
+  observationHistoryLimit: number;
 }
 
 export interface RoomOption {
@@ -108,6 +120,41 @@ export interface HotelRecord {
   surroundings: string[];
   destination: string;
   scrapedAt: string;
+  childrenAges?: number[];
+  rateEvidence?: RateEvidence;
+  rateChange?: RateChange;
+}
+
+export interface RateEvidence {
+  priceBasis: 'displayed_stay_total' | 'displayed_nightly_rate' | 'unpriced';
+  requestedCurrency: string;
+  observedCurrency: string | null;
+  currencyStatus: 'confirmed' | 'ambiguous' | 'mismatch' | 'unknown';
+  taxStatus: 'included' | 'excluded' | 'mixed' | 'unknown';
+  taxText: string | null;
+  observedTotalText: string | null;
+  observedNightlyText: string | null;
+  searchContextVerified: boolean;
+  comparisonWarnings: string[];
+  comparisonScope: 'hotel_search_offer';
+}
+
+export interface RateObservation {
+  at: string;
+  totalPrice: number | null;
+  pricePerNight: number | null;
+  availabilityStatus: HotelRecord['availabilityStatus'];
+}
+export interface RateChange {
+  monitorName: string;
+  status: 'baseline' | 'unchanged' | 'price_drop' | 'price_increase' | 'not_comparable';
+  reason: string | null;
+  previousObservedAt: string | null;
+  previousTotalPrice: number | null;
+  totalPriceChange: number | null;
+  priceChangePercent: number | null;
+  alert: boolean;
+  observations: RateObservation[];
 }
 
 export interface SearchState {
@@ -137,6 +184,8 @@ export interface SearchState {
   offset: number;
   pageSize: number;
   hasMore: boolean;
+  maxPages?: number;
+  coverage?: { status: 'pending' | 'complete' | 'empty' | 'limited' | 'failed'; successfulPages: number; reason: string | null };
 }
 
 export interface DetailRequestData {

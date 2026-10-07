@@ -142,7 +142,7 @@ test('uses Booking.com search URL mode exclusively and preserves website filters
   assert.equal(pagedUrl.searchParams.get('offset'), '25');
 });
 
-test('defaults to datacenter proxy first with a residential fallback tier', () => {
+test('defaults to datacenter only and adds residential fallback only on opt-in', () => {
   const input = normalizeInput({
     destinations: ['London, United Kingdom'],
     checkIn: '2026-08-15',
@@ -153,7 +153,9 @@ test('defaults to datacenter proxy first with a residential fallback tier', () =
   // per gigabyte. Residential transfer was 90% of a measured run's cost.
   assert.deepEqual(input.proxyConfiguration, { useApifyProxy: true });
 
-  const tiers = buildProxyTiers(input.proxyConfiguration);
+  assert.equal(input.allowResidentialFallback, false);
+  assert.equal(buildProxyTiers(input.proxyConfiguration).length, 1);
+  const tiers = buildProxyTiers(input.proxyConfiguration, true);
   assert.equal(tiers.length, 2);
   assert.deepEqual(tiers[0].options, { useApifyProxy: true });
   assert.deepEqual(tiers[1].options, { useApifyProxy: true, groups: ['RESIDENTIAL'] });
@@ -179,7 +181,7 @@ test('carries the requested country onto both proxy tiers', () => {
   const tiers = buildProxyTiers(normalizeProxyConfiguration({
     useApifyProxy: true,
     apifyProxyCountry: 'gb',
-  }));
+  }), true);
   assert.equal(tiers.length, 2);
   assert.deepEqual(tiers[0].options, { useApifyProxy: true, countryCode: 'GB' });
   assert.deepEqual(tiers[1].options, {

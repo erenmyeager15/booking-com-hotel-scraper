@@ -2,6 +2,9 @@ import { Actor } from 'apify';
 import { CheerioCrawler } from 'crawlee';
 import type { ProxyConfiguration } from 'apify';
 import type { HotelRecord, SearchState } from './types.js';
+import { addRateEvidence } from './rate-evidence.js';
+import { pushHotelRecord } from './records.js';
+import { restoreSearchState } from './search-state.js';
 import {
   buildSearchUrl,
   classifyBookingDocument,
@@ -75,7 +78,7 @@ export async function runHttpFastPath(
     navigationTimeoutSecs: 20,
     additionalMimeTypes: ['application/xhtml+xml'],
     requestHandler: async ({ $, request, crawler: activeCrawler, log }) => {
-      const state = request.userData.state as SearchState;
+      const state = restoreSearchState(request.userData.state as SearchState);
       if (spendingLimitReached || !state.hasMore) return;
 
       const documentState = classifyBookingDocument(
@@ -88,7 +91,8 @@ export async function runHttpFastPath(
       }
       if (documentState === 'no-results') {
         if (hasSearchContext(request.loadedUrl ?? request.url, state)) {
-          if (state.collectedCount === 0) noResultDestinations.add(state.destination);
+          if (state.collectedCount === 0) noResultDestinations.add(state.requestNamespace ?? state.destination);
+          if (state.coverage) { state.coverage.status = state.collectedCount ? 'complete' : 'empty'; state.coverage.reason = null; }
           state.hasMore = false;
         } else {
           queueBrowserFallback(state);
@@ -115,11 +119,16 @@ export async function runHttpFastPath(
       let newOnPage = 0;
       let duplicateOnPage = 0;
       let filteredOnPage = 0;
+      if (state.coverage) state.coverage.successfulPages++;
 
       for (const element of cards.toArray()) {
         if (state.collectedCount >= state.maxResults || spendingLimitReached) break;
 
-        const record = extractPropertyFromHtml($(element), state);
+        const extracted = extractPropertyFromHtml($(element), state);
+        const card = $(element);
+        const record = extracted ? addRateEvidence(extracted, state,
+          firstText(card, ['[data-testid="price-and-discounted-price"]', '[data-testid="price-for-x-nights"]']),
+          firstText(card, ['[data-testid="price-per-night"]']), card.text(), hasSearchContext(request.loadedUrl ?? request.url, state)) : null;
         if (!record?.propertyId) continue;
         if (!hasUsableStayPrice(record)) continue;
         extractedOnPage++;
@@ -137,7 +146,7 @@ export async function runHttpFastPath(
         }
 
         state.seenIds.push(record.propertyId);
-        const chargeResult = await Actor.pushData(record, HOTEL_SCRAPED_EVENT);
+        const chargeResult = await pushHotelRecord(record, HOTEL_SCRAPED_EVENT);
         const recordWasSaved = chargeResult.chargedCount > 0 || !chargeResult.eventChargeLimitReached;
         if (!recordWasSaved) {
           spendingLimitReached = true;
@@ -160,6 +169,7 @@ export async function runHttpFastPath(
 
       state.examinedCount += extractedOnPage;
       if (state.collectedCount >= state.maxResults || spendingLimitReached) {
+        if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = spendingLimitReached ? 'spending_limit' : 'max_results'; }
         state.hasMore = false;
         return;
       }
@@ -186,8 +196,20 @@ export async function runHttpFastPath(
         return;
       }
       if (progressAction === 'stop') {
-        if (state.collectedCount === 0) noResultDestinations.add(state.destination);
+        if (state.coverage) {
+          const duplicate = newOnPage === 0 && duplicateOnPage > 0;
+          const capped = Math.floor(state.offset / state.pageSize) + 1 >= (state.maxPages ?? 40);
+          state.coverage.status = duplicate || capped ? 'limited' : state.collectedCount ? 'complete' : 'empty';
+          state.coverage.reason = duplicate ? 'repeated_page' : capped ? 'page_cap' : null;
+        }
+        if (state.collectedCount === 0) noResultDestinations.add(state.requestNamespace ?? state.destination);
         state.hasMore = false;
+        return;
+      }
+
+      if (Math.floor(state.offset / state.pageSize) + 1 >= (state.maxPages ?? 40)) {
+        state.hasMore = false;
+        if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'page_cap'; }
         return;
       }
 
@@ -201,7 +223,7 @@ export async function runHttpFastPath(
       }]);
     },
     failedRequestHandler: async ({ request, log }, error) => {
-      const state = request.userData.state as SearchState;
+      const state = restoreSearchState(request.userData.state as SearchState);
       const message = error instanceof Error ? error.message : String(error);
       log.warning(`HTTP fast path unavailable; using browser fallback for ${state.destination}.`, {
         error: message,

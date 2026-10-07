@@ -42,6 +42,8 @@
               "propertyUrl",
               "propertyId",
               "roomOptions",
+              "rateEvidence",
+              "rateChange",
               "facilities",
               "imageUrls",
               "surroundings",
@@ -116,7 +118,7 @@
     }
   },
   "exampleRunInput": {
-    "body": "{\"destinations\":[\"London, United Kingdom\"],\"adults\":2,\"rooms\":1,\"childrenAges\":[],\"propertyTypes\":[],\"stars\":[],\"minReviewScore\":0,\"sortBy\":\"popularity\",\"maxResults\":1,\"currency\":\"USD\",\"language\":\"en-us\",\"scrapeDetails\":true,\"maxImages\":10,\"proxyConfiguration\":{\"useApifyProxy\":true}}",
+    "body": "{\"destinations\":[\"London, United Kingdom\"],\"adults\":2,\"rooms\":1,\"maxResults\":25,\"currency\":\"USD\",\"scrapeDetails\":false,\"allowResidentialFallback\":false,\"proxyConfiguration\":{\"useApifyProxy\":true}}",
     "contentType": "application/json; charset=utf-8"
   },
   "defaultRunOptions": {

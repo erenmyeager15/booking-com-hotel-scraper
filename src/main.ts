@@ -8,7 +8,10 @@ import {
   normalizeInput,
   requiresCloudProxy,
   buildProxyTiers,
+  resolveSearchContext,
 } from './input.js';
+import { initializeMonitoring, finishMonitoring, monitoringCounts, getSavedHotelCount } from './records.js';
+import { restoreSearchState } from './search-state.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const DETAILED_RUN_STARTED_EVENT = 'detailed-run-started';
@@ -16,7 +19,23 @@ const PAGE_SIZE = 25;
 
 await Actor.init();
 
+try {
+  await runBooking();
+} catch (error) {
+  await finishMonitoring().catch(() => null);
+  const message = error instanceof Error ? error.message : String(error);
+  const existingOutput = await Actor.getValue<Record<string, unknown>>('OUTPUT').catch(() => null);
+  await Actor.setValue('OUTPUT', { ...existingOutput, status: existingOutput?.status ?? 'failed', message, results: getSavedHotelCount(),
+    hint: 'Review the dates, search URL, proxy configuration and run log. Expired dates and incomplete child ages are rejected before navigation.' });
+  await Actor.fail(message);
+}
+await Actor.exit();
+
+async function runBooking(): Promise<void> {
+
 const input = normalizeInput((await Actor.getInput<ActorInput>()) ?? {});
+// Resolve every saved URL before opening proxies, charging setup, or fetching pages.
+const resolvedUrls = input.searchUrls.map(url => resolveSearchContext(url, input));
 const isCloudRun = Boolean(process.env.APIFY_ACTOR_RUN_ID);
 interface SearchSource {
   destination: string;
@@ -24,7 +43,7 @@ interface SearchSource {
 }
 
 const searchSources: SearchSource[] = input.searchUrls.length > 0
-  ? input.searchUrls.map((searchUrl, index) => ({
+  ? resolvedUrls.map(({ searchUrl }, index) => ({
     destination: destinationFromSearchUrl(searchUrl) ?? `Booking.com URL ${index + 1}`,
     searchUrl,
   }))
@@ -41,17 +60,19 @@ if (requiresCloudProxy(input.proxyConfiguration, isCloudRun)) {
     + 'Keep Apify Proxy enabled or provide a custom proxy URL.',
   );
 }
+await initializeMonitoring(input);
 
-// Fast mode can afford a bounded residential fallback because one search page yields
-// many records. Detailed mode opens a page per hotel, so it stays on datacenter (or a
-// user-supplied custom proxy) to keep its fixed result price sustainable.
-const proxyTiers = buildProxyTiers(input.proxyConfiguration, !input.scrapeDetails);
+// Residential fallback is an explicit fast-mode choice, capped to one page. It
+// can improve access but is not guaranteed to be profitable at the fixed price.
+const proxyTiers = buildProxyTiers(input.proxyConfiguration, !input.scrapeDetails && input.allowResidentialFallback);
 
 const chargedSearches: SearchSource[] = [];
 let searchChargeLimitReached = false;
 
 if (input.scrapeDetails && !(await chargeDetailedRunSetup())) {
-  await Actor.fail('Maximum cost per run was reached before detailed-mode browser setup.');
+  await Actor.setValue('OUTPUT', { status: 'stopped_charge_limit', results: 0, spendingLimitReached: true,
+    message: 'Maximum charge was reached before detailed-mode browser setup.' });
+  return;
 }
 
 for (const source of searchSources) {
@@ -64,7 +85,9 @@ for (const source of searchSources) {
 }
 
 if (chargedSearches.length === 0) {
-  await Actor.fail('Maximum cost per run was reached before starting any Booking.com search.');
+  await Actor.setValue('OUTPUT', { status: 'stopped_charge_limit', results: 0, spendingLimitReached: true,
+    message: 'Maximum charge was reached before starting any Booking.com search.' });
+  return;
 }
 
 if (searchChargeLimitReached) {
@@ -75,10 +98,10 @@ let failedRequestCount = 0;
 let chargedHotelCount = 0;
 let noResultDestinationCount = 0;
 let spendingLimitReached = false;
+let finalStates: SearchState[] = [];
 
-// Try each proxy tier in turn. The first tier is the cheap datacenter pool; if it
-// yields nothing, the run retries on residential rather than failing, so a datacenter
-// block costs money instead of costing the user their results.
+// Retry another tier only when explicitly enabled and nothing was saved. Never
+// restart productive searches on a costlier tier just to disguise partial coverage.
 for (const [tierIndex, tier] of proxyTiers.entries()) {
   if (tierIndex > 0) {
     console.warn(`No Booking.com properties were collected using ${proxyTiers[tierIndex - 1].label}; retrying with ${tier.label}.`);
@@ -98,9 +121,13 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   }
 
   console.info(`Starting ${input.scrapeDetails ? 'detailed' : 'fast'} Booking.com scrape for ${chargedSearches.length} search source(s) using ${tier.label}.`);
+  failedRequestCount = 0;
+  finalStates = [];
 
   const initialRequests: SearchRequest[] = chargedSearches.map((source, sourceIndex) => {
-    const state = createSearchState(source, `${tierIndex}:${sourceIndex}`);
+    const state = restoreSearchState(createSearchState(source, `${tierIndex}:${sourceIndex}`));
+    if ('groups' in tier.options && tier.options.groups?.includes('RESIDENTIAL')) state.maxPages = 1;
+    finalStates.push(state);
     return {
       url: buildSearchUrl(state),
       uniqueKey: `search:${tierIndex}:${sourceIndex}:0`,
@@ -130,12 +157,13 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Crawler failed: ${message}`);
+    if (getSavedHotelCount() > 0) { chargedHotelCount = getSavedHotelCount(); failedRequestCount++; break; }
     if (tierIndex >= proxyTiers.length - 1) throw err;
     continue;
   }
 
   const scrapeState = getScrapeState();
-  chargedHotelCount = httpResult.chargedHotelCount + scrapeState.chargedHotelCount;
+  chargedHotelCount = getSavedHotelCount();
   noResultDestinationCount = httpResult.noResultDestinationCount + scrapeState.noResultDestinationCount;
   spendingLimitReached = httpResult.spendingLimitReached || scrapeState.spendingLimitReached;
 
@@ -148,7 +176,7 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
 
 const allSearchesCompletedEmpty = noResultDestinationCount === chargedSearches.length
   && failedRequestCount === 0;
-if (chargedHotelCount === 0 && !allSearchesCompletedEmpty) {
+if (chargedHotelCount === 0 && !allSearchesCompletedEmpty && !spendingLimitReached) {
   await Actor.setValue('OUTPUT', {
     status: 'failed_no_results',
     results: 0,
@@ -163,26 +191,38 @@ if (allSearchesCompletedEmpty) {
   console.info(`Booking.com returned no matching properties for ${noResultDestinationCount} destination search(es).`);
 }
 
+await finishMonitoring();
+for (const state of finalStates) {
+  if (state.coverage?.status === 'pending') {
+    state.coverage.status = spendingLimitReached ? 'limited' : 'failed';
+    state.coverage.reason = spendingLimitReached ? 'spending_limit' : 'incomplete_search';
+  }
+}
+
 if (spendingLimitReached) {
   console.warn(`Booking.com crawl stopped at the user's spending limit after ${chargedHotelCount} charged hotel records.`);
 }
 
 await Actor.setValue('OUTPUT', {
-  status: allSearchesCompletedEmpty ? 'succeeded_no_matches' : 'succeeded',
+  status: allSearchesCompletedEmpty ? 'succeeded_no_matches' : failedRequestCount > 0 || finalStates.some(s => s.coverage?.status === 'failed') ? 'partial' : 'succeeded',
   mode: input.scrapeDetails ? 'detailed' : 'fast',
   results: chargedHotelCount,
   failedRequests: failedRequestCount,
   searchesAttempted: chargedSearches.length,
   noResultDestinations: noResultDestinationCount,
   spendingLimitReached,
+  searchCoverage: finalStates.map(s => ({ destination: s.destination, checkIn: s.checkIn, checkOut: s.checkOut,
+    ...s.coverage, savedOrQueued: s.collectedCount, maxPages: s.maxPages })),
+  monitoring: { enabled: input.trackChanges, ...monitoringCounts,
+    note: 'Missing hotels are not inferred to be sold out. Comparisons refer to the displayed hotel offer, not a guaranteed identical room or bookable final price.' },
 });
 
-await Actor.exit();
 
 function createSearchState(source: SearchSource, requestNamespace: string): SearchState {
   const url = source.searchUrl ? new URL(source.searchUrl) : null;
-  const urlCheckIn = validDateParam(url?.searchParams.get('checkin'));
-  const urlCheckOut = validDateParam(url?.searchParams.get('checkout'));
+  const resolved = source.searchUrl ? resolveSearchContext(source.searchUrl, input) : null;
+  const urlCheckIn = resolved?.checkIn;
+  const urlCheckOut = resolved?.checkOut;
   const childrenAges = url
     ? url.searchParams.getAll('age').map(Number).filter((age) => Number.isInteger(age) && age >= 0 && age <= 17)
     : input.childrenAges;
@@ -213,16 +253,14 @@ function createSearchState(source: SearchSource, requestNamespace: string): Sear
     offset: 0,
     pageSize: PAGE_SIZE,
     hasMore: true,
+    maxPages: input.maxPagesPerSearch,
+    coverage: { status: 'pending', successfulPages: 0, reason: null },
   };
 }
 
 function destinationFromSearchUrl(searchUrl: string): string | null {
   const destination = new URL(searchUrl).searchParams.get('ss')?.replace(/\s+/g, ' ').trim();
   return destination || null;
-}
-
-function validDateParam(value: string | null | undefined): string | null {
-  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
 
 function positiveIntegerParam(value: string | null | undefined): number | null {
@@ -242,8 +280,8 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
       },
     },
     requestHandler: router,
-    maxRequestRetries: 2,
-    maxSessionRotations: 2,
+    maxRequestRetries: 1,
+    maxSessionRotations: 1,
     retryOnBlocked: true,
     maxConcurrency: 1,
     maxRequestsPerMinute: 30,
@@ -252,6 +290,8 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
     maxRequestsPerCrawl: 2000,
     failedRequestHandler: async ({ request, log }, error) => {
       failedRequestCount++;
+      const state = restoreSearchState(request.userData.state as SearchState);
+      if (state?.coverage) { state.coverage.status = 'failed'; state.coverage.reason = request.label === 'detail' ? 'detail_request_failed' : 'search_request_failed'; }
       const message = error instanceof Error ? error.message : String(error);
       log.error(`Booking.com request failed after retries: ${request.url}`, { error: message });
     },
@@ -298,6 +338,7 @@ async function chargeDestinationSearch(): Promise<boolean> {
 
   const chargeResult = await Actor.charge({ eventName: SEARCH_STARTED_EVENT });
   return chargeResult.chargedCount >= 1;
+}
 }
 
 async function chargeDetailedRunSetup(): Promise<boolean> {
