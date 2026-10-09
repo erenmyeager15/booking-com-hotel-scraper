@@ -9,13 +9,16 @@ export { parseMoney } from './money.js';
 import { addRateEvidence } from './rate-evidence.js';
 import { pushHotelRecord } from './records.js';
 import { restoreSearchState } from './search-state.js';
+import { restoreSearchShell, searchRedirectDiagnostic } from './navigation.js';
+import { assessSearchEvidence, browserSearchFields } from './search-evidence.js';
+import { PROPERTY_CARD_SELECTOR, hydratePropertyCards, reportedPropertyCount } from './property-cards.js';
 
 export const router = createPlaywrightRouter();
 const HOTEL_SCRAPED_EVENT = 'hotel-scraped';
 const DETAILED_HOTEL_SCRAPED_EVENT = 'detailed-hotel-scraped';
 export const MAX_PAGES_PER_DESTINATION = 40;
 
-export type BookingDocumentState = 'normal' | 'blocked' | 'no-results';
+export type BookingDocumentState = 'normal' | 'blocked' | 'no-results' | 'unavailable';
 export type PageProgressAction = 'next' | 'stop' | 'retry';
 
 export function searchRequestKey(kind: 'http' | 'browser', state: SearchState): string {
@@ -25,6 +28,8 @@ export function searchRequestKey(kind: 'http' | 'browser', state: SearchState): 
 export function hasSearchContext(currentUrl: string, state: SearchState): boolean {
   try {
     const current = new URL(currentUrl);
+    if (current.protocol !== 'https:' || !['www.booking.com', 'booking.com'].includes(current.hostname)
+      || current.username || current.password) return false;
     const expected = state.searchUrl ? new URL(state.searchUrl) : new URL(buildSearchUrl(state));
     const destination = expected.searchParams.get('ss');
     if (destination) {
@@ -33,9 +38,13 @@ export function hasSearchContext(currentUrl: string, state: SearchState): boolea
       const destinationId = expected.searchParams.get('dest_id');
       if (!destinationId || current.searchParams.get('dest_id') !== destinationId) return false;
     }
+    for (const key of ['dest_id', 'dest_type']) {
+      if (expected.searchParams.has(key) && current.searchParams.get(key) !== expected.searchParams.get(key)) return false;
+    }
     return current.searchParams.get('checkin') === state.checkIn && current.searchParams.get('checkout') === state.checkOut
       && current.searchParams.get('group_adults') === String(state.adults)
       && current.searchParams.get('no_rooms') === String(state.rooms)
+      && (current.searchParams.get('group_children') ?? '0') === String((state.childrenAges ?? []).length)
       && current.searchParams.getAll('age').join(',') === (state.childrenAges ?? []).join(',')
       && current.searchParams.get('selected_currency')?.toUpperCase() === state.currency;
   } catch {
@@ -53,6 +62,7 @@ export interface PropertyCardSnapshot {
   propertyId: string | null;
   hotelName: string | null;
   cardText: string | null;
+  taxText?: string | null;
   totalText: string | null;
   perNightText: string | null;
   originalText: string | null;
@@ -77,8 +87,16 @@ export function classifyBookingDocument(
     || /access denied|unusual traffic|security check|automated requests/.test(text)
   ) return 'blocked';
 
+  // Booking can serve its own error page with HTTP 202. This is neither hotel
+  // availability nor evidence of bot blocking. Skip all card/price waits.
+  if (/something went wrong on our end/.test(text)
+    && /error code:\s*50[0234]\b/.test(text)) return 'unavailable';
+
   if (
-    /no properties found|0 properties found|no results found/.test(text)
+    // HTML text extraction can concatenate a preceding button label with "0".
+    // Exclude numeric prefixes, not all word prefixes, to keep a genuine zero
+    // count recognizable without matching the tail of "100 properties found".
+    /\b(?:no properties found|no results found)\b|(?<![\d.,])0 properties (?:found|are available)\b/.test(text)
     || /we (?:couldn't|could not) find any properties|nothing matches your search/.test(text)
     || /no availability for (?:your|these) dates/.test(text)
   ) return 'no-results';
@@ -143,13 +161,17 @@ router.addHandler('detail', async ({ page, request, crawler, session, log }) => 
     return;
   }
 
-  if (await inspectPropertyPageAfterChallengeGrace(page) === 'blocked') {
+  const initialDetailState = await inspectPropertyPageAfterChallengeGrace(page);
+  if (initialDetailState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: property error page');
+  if (initialDetailState === 'blocked') {
     session?.retire();
     throw new SessionError(`BOOKING_DETAIL_BLOCKED: ${record.propertyId}`);
   }
 
   await handleCookieConsent(page);
-  if (await inspectBookingPage(page) === 'blocked') {
+  const detailDocumentState = await inspectBookingPage(page);
+  if (detailDocumentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: property error page');
+  if (detailDocumentState === 'blocked') {
     session?.retire();
     throw new SessionError(`BOOKING_DETAIL_BLOCKED_AFTER_INTERACTION: ${record.propertyId}`);
   }
@@ -203,27 +225,70 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
 
   log.info(`Page offset=${state.offset} for "${state.destination}" (${state.collectedCount}/${state.maxResults})`);
 
-  if (await inspectBookingPageAfterChallengeGrace(page) === 'blocked') {
+  const initialDocumentState = await inspectBookingPageAfterChallengeGrace(page);
+  if (initialDocumentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: search error page');
+  if (initialDocumentState === 'blocked') {
     session?.retire();
     throw new SessionError(`BOOKING_BLOCKED: ${state.destination} offset ${state.offset}`);
   }
 
+  try {
+    if (await restoreSearchShell(page, request.url, initialDocumentState, request.userData)) {
+      log.info('Restored the requested search once after a same-site context-losing redirect.');
+    }
+  } catch (error) {
+    // Do not multiply context-restoration attempts through Crawlee retries.
+    request.noRetry = true;
+    // Crawlee's request.loadedUrl is captured before this handler. An inner
+    // page.goto() may redirect again without updating it; record the current
+    // route anonymously rather than diagnosing from that stale URL.
+    log.warning('Booking search restoration failed; retained hotels are not charged again.', {
+      ...searchRedirectDiagnostic(page.url()),
+      restorationAttempted: request.userData.bookingSearchShellRestoreAttempted === true,
+      retainedHotels: state.collectedCount,
+    });
+    throw error;
+  }
+
   await handleCookieConsent(page);
 
-  if (await inspectBookingPage(page) === 'blocked') {
+  const searchDocumentState = await inspectBookingPage(page);
+  if (searchDocumentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: search error page');
+  if (searchDocumentState === 'blocked') {
     session?.retire();
     throw new SessionError(`BOOKING_BLOCKED_AFTER_INTERACTION: ${state.destination} offset ${state.offset}`);
   }
+
+  // Search controls vary between Booking layouts and may be read-only or hidden.
+  // Do not make editing that form a prerequisite for collecting priced cards.
+  // Assess the rendered stay after hydration: contradictions are rejected and
+  // incomplete evidence disables rate comparisons, not ordinary collection.
+  if (!hasSearchContext(page.url(), state)) {
+    log.warning('Booking search URL context was not retained.', searchRedirectDiagnostic(page.url()));
+    request.noRetry = true;
+    throw new Error('BOOKING_SEARCH_CONTEXT_MISMATCH: loaded search does not match the requested stay and guests');
+  }
+  const readSearchEvidence = async () => {
+    const evidence = assessSearchEvidence(await browserSearchFields(page), state);
+    if (evidence.status === 'mismatch') {
+      request.noRetry = true;
+      throw new Error(`BOOKING_RENDERED_SEARCH_MISMATCH: ${evidence.reason}`);
+    }
+    return hasSearchContext(page.url(), state) && evidence.status === 'confirmed';
+  };
 
   try {
     await page.waitForSelector(propertyCardSelector(), { timeout: 18000 });
   } catch {
     const documentState = await inspectBookingPage(page);
+    if (documentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: search error page');
     if (documentState === 'blocked') {
       session?.retire();
       throw new SessionError(`BOOKING_BLOCKED_WHILE_WAITING: ${state.destination} offset ${state.offset}`);
     }
-    if (documentState === 'no-results' && hasSearchContext(page.url(), state)) {
+    // Allow hydration to finish before rejecting a form initially rendered with defaults.
+    const searchVerified = await readSearchEvidence();
+    if (documentState === 'no-results' && searchVerified) {
       if (state.coverage) { state.coverage.status = state.collectedCount ? 'complete' : 'empty'; state.coverage.reason = null; }
       markNoResultIfComplete(state);
       log.info(`No more Booking.com properties at offset ${state.offset} for "${state.destination}".`);
@@ -237,16 +302,17 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   await randomDelay(page, 100, 300);
 
   const cards = page.locator(propertyCardSelector());
-  const cardCount = await cards.count();
+  const cardCount = await hydratePropertyCards(page, Math.min(state.pageSize, state.maxResults));
   log.info(`Found ${cardCount} cards`);
 
   if (cardCount === 0) {
     const documentState = await inspectBookingPage(page);
+    if (documentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: search error page');
     if (documentState === 'blocked') {
       session?.retire();
       throw new SessionError(`BOOKING_BLOCKED_EMPTY_CARDS: ${state.destination} offset ${state.offset}`);
     }
-    if (documentState === 'no-results' && hasSearchContext(page.url(), state)) {
+    if (documentState === 'no-results' && await readSearchEvidence()) {
       if (state.coverage) { state.coverage.status = state.collectedCount ? 'complete' : 'empty'; state.coverage.reason = null; }
       markNoResultIfComplete(state);
       state.hasMore = false;
@@ -268,6 +334,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   // Read every visible card in one browser round trip. Field-by-field Locator
   // calls become expensive across large result pages, especially when an
   // optional field is absent and waits for its timeout.
+  const searchVerified = await readSearchEvidence();
   const cardSnapshots = await cards.evaluateAll((elements) => {
     const text = (root: Element, selector: string): string | null =>
       root.querySelector(selector)?.textContent ?? null;
@@ -300,6 +367,8 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
         '[data-testid="property-card-title"]',
       ]),
       cardText: root.textContent,
+      taxText: Array.from(root.querySelectorAll('[data-testid="taxes-and-charges"], [data-testid="taxes-and-fees"]'))
+        .map(element => `${element.textContent ?? ''} ${element.getAttribute('aria-label') ?? ''}`).join(' ').trim() || null,
       totalText: firstText(root, [
         '[data-testid="price-and-discounted-price"]',
         '[data-testid="price-for-x-nights"]',
@@ -354,7 +423,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     }
 
     const extracted = extractPropertyFromSnapshot(snapshot, state);
-    const record = extracted ? addRateEvidence(extracted, state, snapshot.totalText, snapshot.perNightText, snapshot.cardText ?? '', hasSearchContext(page.url(), state)) : null;
+    const record = extracted ? addRateEvidence(extracted, state, snapshot.totalText, snapshot.perNightText, snapshot.cardText ?? '', searchVerified, snapshot.taxText) : null;
 
     if (!record?.propertyId) continue;
     if (!state.scrapeDetails && !hasUsableStayPrice(record)) continue;
@@ -434,6 +503,13 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   }
 
   const nextPageUrl = await findNextPageUrl(page, state);
+  const reportedTotal = reportedPropertyCount(await page.locator('h1').allTextContents().then(text => text.join(' ')));
+  if (cardCount < state.pageSize && !nextPageUrl && reportedTotal !== null && reportedTotal > state.offset + cardCount) {
+    state.hasMore = false;
+    if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'lazy_load_incomplete'; }
+    log.warning('More properties were reported, but the bounded lazy-load window did not fill this page. Coverage is limited, not complete.');
+    return;
+  }
   const progressAction = decidePageProgress({
     cardCount,
     extractedCount: extractedOnPage,
@@ -482,7 +558,6 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     label: 'search',
   }]);
 
-  await randomDelay(page, 1000, 2000);
 });
 
 function markNoResultIfComplete(state: SearchState): void {
@@ -492,10 +567,7 @@ function markNoResultIfComplete(state: SearchState): void {
 }
 
 function propertyCardSelector(): string {
-  return [
-    '[data-testid="property-card"]',
-    '[data-testid="property-card-container"]',
-  ].join(',');
+  return PROPERTY_CARD_SELECTOR;
 }
 
 export function buildSearchUrl(state: SearchState, currentUrl?: string): string {
@@ -554,7 +626,7 @@ async function findNextPageUrl(page: Page, state: SearchState): Promise<string |
     '[data-testid="pagination"] a[aria-label*="Next"]',
     'a[aria-label="Next page"]',
     'a.paging-next',
-  ].join(',')).first().getAttribute('href').catch(() => null);
+  ].join(',')).evaluateAll(elements => elements[0]?.getAttribute('href') ?? null);
   if (!href) return null;
 
   try {
@@ -839,6 +911,8 @@ export function normalizeBookingUrl(href: string | null): string | null {
   if (!href) return null;
   try {
     const url = new URL(href, 'https://www.booking.com');
+    if (url.protocol !== 'https:' || !['www.booking.com', 'booking.com'].includes(url.hostname)
+      || url.username || url.password || !url.pathname.startsWith('/hotel/')) return null;
     url.hash = '';
     url.search = '';
     return url.toString();

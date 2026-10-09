@@ -1,11 +1,12 @@
 import type { HotelRecord, SearchState } from './types.js';
 import { observedCurrency } from './money.js';
 
-export function addRateEvidence(record: HotelRecord, state: SearchState, totalText: string | null, nightlyText: string | null, cardText: string, verified: boolean): HotelRecord {
+export function addRateEvidence(record: HotelRecord, state: SearchState, totalText: string | null, nightlyText: string | null, cardText: string, verified: boolean, dedicatedTaxText?: string | null): HotelRecord {
   const currency = observedCurrency(totalText ?? nightlyText ?? '', state.currency);
-  const taxText = cardText.match(/(?:includes?|excluding|excludes?|plus|\+|taxes?)[^.!?]{0,100}(?:taxes|fees|charges)[^.!?]{0,60}/i)?.[0]?.trim() ?? null;
-  const included = /(?:includes?|including|inclusive of)\s+(?:all\s+)?taxes|taxes(?:\s+and\s+(?:fees|charges))?\s+included/i.test(cardText);
-  const excluded = /(?:excluding|excludes?|not including|plus|\+)\s+(?:[A-Z$€£₹\d,. ]+\s+)?(?:taxes|fees|charges)|taxes(?:\s+and\s+(?:fees|charges))?\s+(?:not included|excluded)/i.test(cardText);
+  const evidenceText = (dedicatedTaxText || cardText).replace(/\s+/g, ' ').trim();
+  const taxText = evidenceText.match(/.{0,40}\b(?:tax(?:es)?|fees|charges)\b.{0,100}/i)?.[0]?.trim().slice(0,200) ?? null;
+  const included = /\b(?:includes?|including|inclusive of|incl\.)\s+(?:all\s+)?tax(?:es)?\b|\btax(?:es)?(?:\s+(?:and|&)\s+(?:fees|charges))?\s+(?:are\s+)?included\b/i.test(evidenceText);
+  const excluded = /\b(?:excluding|excludes?|not including)\s+(?:all\s+)?tax(?:es)?\b|(?:\bplus|\+)\s*(?:[A-Z$€£₹\d,. ]+\s+)?(?:taxes|fees|charges)\b|\btax(?:es)?(?:\s+(?:and|&)\s+(?:fees|charges))?\s+(?:are\s+)?(?:not included|excluded)\b/i.test(evidenceText);
   const taxStatus = included && excluded ? 'mixed' : included ? 'included' : excluded ? 'excluded' : 'unknown';
   const comparisonWarnings: string[] = [];
   if (!verified) comparisonWarnings.push('search_context_not_verified');

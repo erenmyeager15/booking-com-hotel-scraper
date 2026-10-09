@@ -136,7 +136,10 @@ export function normalizeSearchUrls(value: unknown): string[] {
     if (!(hostname === 'booking.com' || hostname.endsWith('.booking.com'))) {
       throw new Error(`searchUrls only accepts Booking.com URLs: ${rawUrl}`);
     }
-    if (!/\/searchresults(?:\.html)?\/?$/i.test(url.pathname)) {
+    // Booking's public search links include localized filenames such as
+    // searchresults.en-gb.html, not only searchresults.html. Keep the exact
+    // search route and preserve its stay, destination identity and filters.
+    if (!/^\/searchresults(?:\.(?:[a-z]{2,3}(?:-[a-z]{2})?\.)?html)?\/?$/i.test(url.pathname)) {
       throw new Error(`Use a Booking.com search-results URL, not a property or homepage URL: ${rawUrl}`);
     }
 

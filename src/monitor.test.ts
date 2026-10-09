@@ -104,6 +104,19 @@ test('money parser preserves decimals and thousands across common Booking locale
     ['JPY 1,234',1234],['INR 1,23,456',123456],['US$280 for 2 nights',280]] as const)assert.equal(parseMoney(text),amount);
 });
 
+test('dedicated tax labels preserve evidence without inventing an inclusive total', () => {
+  for (const label of ['Incl. taxes and charges', 'Taxes & charges are included', 'Includes all taxes']) {
+    const record = addRateEvidence(hotel(), search, 'GBP 200', null, 'unrelated card text', true, label);
+    assert.equal(record.rateEvidence?.taxStatus, 'included');
+    assert.ok(record.rateEvidence?.taxText?.includes('tax') || record.rateEvidence?.taxText?.includes('Tax'));
+  }
+  for (const label of ['Taxes & charges are not included', 'Excludes all taxes', '+ GBP 20 taxes and charges', '+£40 taxes and charges']) {
+    assert.equal(addRateEvidence(hotel(), search, 'GBP 200', null, '', true, label).rateEvidence?.taxStatus, 'excluded');
+  }
+  assert.equal(addRateEvidence(hotel(), search, 'GBP 200', null, '', true, 'Taxes and charges').rateEvidence?.taxStatus, 'unknown');
+  assert.equal(addRateEvidence(hotel(), search, 'GBP 200', null, 'Includes taxes and fees', true, 'Tax treatment unavailable').rateEvidence?.taxStatus, 'unknown');
+});
+
 test('empty API input has usable defaults while deliberate empty destinations fail', () => {
   assert.deepEqual(normalizeInput({},today).destinations,['London, United Kingdom']);
   assert.throws(()=>normalizeInput({destinations:[]},today),/destination/);

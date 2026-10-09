@@ -1,4 +1,5 @@
-import { gotScraping } from 'crawlee';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import type { ProxyConfiguration } from 'apify';
 
 export class ProxyConfigurationError extends Error {
@@ -17,12 +18,41 @@ export function proxyConfigurationProblem(error: unknown, country?: string): str
 }
 
 type ProxyProbe = (url: string) => Promise<{ statusCode: number }>;
-const defaultProbe: ProxyProbe = proxyUrl => gotScraping({
-  url: 'https://www.booking.com/robots.txt', method: 'HEAD', proxyUrl,
-  timeout: { request: 10000 }, retry: { limit: 0 }, throwHttpErrors: false,
-});
+/** Check CONNECT authorization only. The old got-scraping HEAD probe could stall
+ * during proxy/TLS negotiation before its request timeout started. No Booking
+ * document, TLS negotiation, browser or billable result is needed for this check. */
+export function probeProxyTunnel(proxyUrl: string, timeoutMillis = 8000): Promise<{ statusCode: number }> {
+  const proxy = new URL(proxyUrl);
+  if (!['http:', 'https:'].includes(proxy.protocol)) return Promise.reject(new Error('Unsupported proxy preflight protocol'));
+  if (!Number.isFinite(timeoutMillis) || timeoutMillis <= 0) return Promise.reject(new Error('Invalid proxy preflight timeout'));
+  return new Promise((resolve, reject) => {
+    const request = (proxy.protocol === 'https:' ? httpsRequest : httpRequest)({
+      protocol: proxy.protocol, hostname: proxy.hostname, port: proxy.port || (proxy.protocol === 'https:' ? 443 : 80),
+      method: 'CONNECT', path: 'www.booking.com:443', agent: false,
+      headers: { Host: 'www.booking.com:443', ...(proxy.username || proxy.password ? {
+        'Proxy-Authorization': `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString('base64')}`,
+      } : {}) },
+    });
+    let settled = false;
+    const finish = (statusCode?: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      request.destroy();
+      if (statusCode) resolve({ statusCode });
+      else reject(new Error('Proxy tunnel preflight did not complete within its bounded connection check'));
+    };
+    // Covers DNS, TCP connection and the CONNECT response, not just response data.
+    const timer = setTimeout(() => finish(), timeoutMillis);
+    request.once('connect', (response, socket) => { socket.destroy(); finish(response.statusCode); });
+    request.once('response', response => { response.destroy(); finish(response.statusCode); });
+    request.once('error', () => finish());
+    request.end();
+  });
+}
+const defaultProbe: ProxyProbe = proxyUrl => probeProxyTunnel(proxyUrl);
 
-/** Verify the configured tunnel cheaply before starting a browser or charging setup. */
+/** A successful CONNECT proves proxy access, not Booking source availability. */
 export async function assertProxyAvailable(proxy: Pick<ProxyConfiguration, 'newUrl'> | undefined,
   country?: string, probe: ProxyProbe = defaultProbe): Promise<void> {
   if (!proxy) return;

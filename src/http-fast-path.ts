@@ -6,6 +6,9 @@ import { addRateEvidence } from './rate-evidence.js';
 import { pushHotelRecord } from './records.js';
 import { restoreSearchState } from './search-state.js';
 import { proxyConfigurationProblem } from './proxy-check.js';
+import { assessSearchEvidence, htmlSearchFields } from './search-evidence.js';
+import { searchRedirectDiagnostic } from './navigation.js';
+import { PROPERTY_CARD_SELECTOR, reportedPropertyCount } from './property-cards.js';
 import {
   buildSearchUrl,
   classifyBookingDocument,
@@ -92,12 +95,27 @@ export async function runHttpFastPath(
         $('title').text(),
         $('body').text().slice(0, 5000),
       );
-      if (documentState === 'blocked') {
+      if (documentState === 'blocked' || documentState === 'unavailable') {
         queueBrowserFallback(state);
         return;
       }
+      const searchEvidence = assessSearchEvidence(htmlSearchFields($), state);
+      const urlMatches = hasSearchContext(request.loadedUrl ?? request.url, state);
+      // Missing form evidence does not make correctly requested, priced cards
+      // unusable. Keep that uncertainty in rateEvidence; only an explicit
+      // contradiction requires browser fallback. An unverified empty page is
+      // still never accepted as genuine no availability below.
+      if (!urlMatches || searchEvidence.status === 'mismatch') {
+        log.warning('HTTP search context needs the bounded browser fallback.', {
+          ...searchRedirectDiagnostic(request.loadedUrl ?? request.url),
+          renderedReason: searchEvidence.reason,
+        });
+        queueBrowserFallback(state);
+        return;
+      }
+      const searchVerified = urlMatches && searchEvidence.status === 'confirmed';
       if (documentState === 'no-results') {
-        if (hasSearchContext(request.loadedUrl ?? request.url, state)) {
+        if (searchVerified) {
           if (state.collectedCount === 0) noResultDestinations.add(state.requestNamespace ?? state.destination);
           if (state.coverage) { state.coverage.status = state.collectedCount ? 'complete' : 'empty'; state.coverage.reason = null; }
           state.hasMore = false;
@@ -107,7 +125,7 @@ export async function runHttpFastPath(
         return;
       }
 
-      const cards = $('[data-testid="property-card"], [data-testid="property-card-container"]');
+      const cards = $(PROPERTY_CARD_SELECTOR);
       if (cards.length === 0) {
         queueBrowserFallback(state);
         return;
@@ -135,7 +153,9 @@ export async function runHttpFastPath(
         const card = $(element);
         const record = extracted ? addRateEvidence(extracted, state,
           firstText(card, ['[data-testid="price-and-discounted-price"]', '[data-testid="price-for-x-nights"]']),
-          firstText(card, ['[data-testid="price-per-night"]']), card.text(), hasSearchContext(request.loadedUrl ?? request.url, state)) : null;
+          firstText(card, ['[data-testid="price-per-night"]']), card.text(), searchVerified,
+          card.find('[data-testid="taxes-and-charges"], [data-testid="taxes-and-fees"]').toArray()
+            .map(tax => `${$(tax).text()} ${$(tax).attr('aria-label') ?? ''}`).join(' ').trim()) : null;
         if (!record?.propertyId) continue;
         if (!hasUsableStayPrice(record)) continue;
         extractedOnPage++;
@@ -187,6 +207,32 @@ export async function runHttpFastPath(
         .attr('href');
       const currentUrl = request.loadedUrl ?? request.url;
       const nextPageUrl = resolveUrl(nextHref, currentUrl);
+      const reportedTotal = reportedPropertyCount($('h1').text());
+      // Static HTML can stop at Booking's first lazy-loaded batch (currently
+      // observed as 20 rows even when a 25-row result batch was requested).
+      // Continue from the number of source cards actually consumed before
+      // paying for a browser. If Booking ignores that offset, the bounded page
+      // cap below sends the retained IDs to the browser fallback without
+      // recharging them.
+      if (!nextPageUrl && cards.length < state.pageSize
+        && (reportedTotal === null || reportedTotal > state.offset + cards.length)) {
+        const successfulPages = state.coverage?.successfulPages
+          ?? Math.floor(state.offset / state.pageSize) + 1;
+        if (newOnPage > 0 && successfulPages < (state.maxPages ?? 40)) {
+          state.offset += cards.length;
+          const continuationUrl = buildSearchUrl(state, currentUrl);
+          log.info(`Static Booking results stopped after ${cards.length} cards; continuing at offset ${state.offset}.`);
+          await activeCrawler.addRequests([{
+            url: continuationUrl,
+            uniqueKey: searchRequestKey('http', state),
+            userData: { state },
+            label: 'search',
+          }]);
+          return;
+        }
+        queueBrowserFallback(state);
+        return;
+      }
       const progressAction = decidePageProgress({
         cardCount: cards.length,
         extractedCount: extractedOnPage,

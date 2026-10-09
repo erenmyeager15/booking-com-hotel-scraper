@@ -13,28 +13,40 @@ import {
 import { initializeMonitoring, finishMonitoring, monitoringCounts, getSavedHotelCount } from './records.js';
 import { restoreSearchState } from './search-state.js';
 import { assertProxyAvailable, ProxyConfigurationError, proxyConfigurationProblem } from './proxy-check.js';
+import { StartupGuard } from './startup.js';
+import { bookingNavigationOptions } from './navigation.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const DETAILED_RUN_STARTED_EVENT = 'detailed-run-started';
 const PAGE_SIZE = 25;
 
-await Actor.init();
+const startup = new StartupGuard();
+let sdkReady = false;
 
 try {
+  await startup.run('sdk_init', () => Actor.init());
+  sdkReady = true;
   await runBooking();
 } catch (error) {
-  await finishMonitoring().catch(() => null);
-  const message = error instanceof Error ? error.message : String(error);
-  const existingOutput = await Actor.getValue<Record<string, unknown>>('OUTPUT').catch(() => null);
-  await Actor.setValue('OUTPUT', { ...existingOutput, status: existingOutput?.status ?? (error instanceof ProxyConfigurationError ? 'invalid_proxy_configuration' : 'failed'), message, results: getSavedHotelCount(),
-    hint: 'Review the dates, search URL, proxy configuration and run log. Expired dates and incomplete child ages are rejected before navigation.' });
-  await Actor.fail(message);
+  if (!sdkReady) {
+    console.error('Booking.com SDK initialization failed before collection; no source request was started.');
+    process.exit(1);
+  }
+  // Reporting must not consume the rest of the run if storage/API access failed.
+  await new StartupGuard(10_000).run('failure_reporting', async () => {
+    await finishMonitoring().catch(() => null);
+    const message = error instanceof Error ? error.message : String(error);
+    const existingOutput = await Actor.getValue<Record<string, unknown>>('OUTPUT').catch(() => null);
+    await Actor.setValue('OUTPUT', { ...existingOutput, status: existingOutput?.status ?? (error instanceof ProxyConfigurationError ? 'invalid_proxy_configuration' : 'failed'), message, results: getSavedHotelCount(),
+      hint: 'Review the dates, search URL, proxy configuration and run log. Expired dates and incomplete child ages are rejected before navigation.' });
+    await Actor.fail(message);
+  }, 10_000);
 }
 await Actor.exit();
 
 async function runBooking(): Promise<void> {
 
-const input = normalizeInput((await Actor.getInput<ActorInput>()) ?? {});
+const input = normalizeInput((await startup.run('load_input', () => Actor.getInput<ActorInput>(), 10_000)) ?? {});
 // Resolve every saved URL before opening proxies, charging setup, or fetching pages.
 const resolvedUrls = input.searchUrls.map(url => resolveSearchContext(url, input));
 const isCloudRun = Boolean(process.env.APIFY_ACTOR_RUN_ID);
@@ -70,7 +82,7 @@ const chargedSearches: SearchSource[] = [];
 let searchChargeLimitReached = false;
 
 for (const source of searchSources) {
-  const charged = await chargeDestinationSearch();
+  const charged = await startup.run('search_budget', chargeDestinationSearch, 10_000);
   if (!charged) {
     searchChargeLimitReached = true;
     break;
@@ -105,8 +117,11 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
 
   let proxyConfiguration: ProxyConfiguration | undefined;
   try {
-    proxyConfiguration = await Actor.createProxyConfiguration(tier.options);
-    await assertProxyAvailable(proxyConfiguration, 'countryCode' in tier.options ? tier.options.countryCode : undefined);
+    // Only startup uses the global guard. A later explicitly opted-in proxy tier
+    // gets its own bounded setup window after the prior crawl has finished.
+    const setup = tierIndex === 0 ? startup : new StartupGuard(35_000);
+    proxyConfiguration = await setup.run('proxy_setup', () => Actor.createProxyConfiguration(tier.options), 20_000);
+    await setup.run('proxy_preflight', () => assertProxyAvailable(proxyConfiguration, 'countryCode' in tier.options ? tier.options.countryCode : undefined), 12_000);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (tierIndex < proxyTiers.length - 1) {
@@ -117,10 +132,10 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   }
 
   if (!monitoringInitialized) {
-    await initializeMonitoring(input);
+    await startup.run('history_setup', () => initializeMonitoring(input), 15_000);
     monitoringInitialized = true;
   }
-  if (input.scrapeDetails && !(await chargeDetailedRunSetup())) {
+  if (input.scrapeDetails && !(await startup.run('detail_budget', chargeDetailedRunSetup, 10_000))) {
     await Actor.setValue('OUTPUT', { status: 'stopped_charge_limit', results: 0, spendingLimitReached: true,
       message: 'Maximum charge was reached before detailed-mode browser setup.' });
     return;
@@ -296,7 +311,7 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
     retryOnBlocked: true,
     maxConcurrency: 1,
     maxRequestsPerMinute: 30,
-    navigationTimeoutSecs: 45,
+    navigationTimeoutSecs: 30,
     requestHandlerTimeoutSecs: 90,
     maxRequestsPerCrawl: 2000,
     failedRequestHandler: async ({ request, log }, error) => {
@@ -320,7 +335,8 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
       },
     },
     preNavigationHooks: [
-      async ({ page }) => {
+      async ({ page }, gotoOptions) => {
+        Object.assign(gotoOptions, bookingNavigationOptions());
         const w = 1280 + Math.floor(Math.random() * 200);
         const h = 720 + Math.floor(Math.random() * 200);
         await page.setViewportSize({ width: w, height: h });
@@ -331,7 +347,9 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
 
         await page.route('**/*', (route) => {
           const type = route.request().resourceType();
-          if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+          // Keep styles: Booking's lazy-load observer needs real layout.
+          // Dropping CSS can leave an incomplete first batch.
+          if (['image', 'media', 'font'].includes(type)) {
             route.abort().catch(() => {});
           } else {
             route.continue().catch(() => {});
