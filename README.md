@@ -1,4 +1,4 @@
-# Booking.com Scraper: Hotel Rates, Rooms & Change Tracking
+# Booking.com Scraper: Hotel Prices, Rooms & Rate Tracking
 
 Scrape Booking.com hotels and accommodation by destination or by pasting a search-results URL with filters already applied. Export clean hotel records to JSON, CSV, Excel, XML, or HTML, or read them through the Apify API.
 
@@ -8,11 +8,16 @@ No Booking.com login or API key is required.
 
 For recurring rate checks, enable `trackChanges` and use a stable `monitorName`, explicit stay dates and a fixed proxy country. Each saved row can include previous prices, percentage changes, alert flags and a bounded observation history. `rateEvidence` explains the displayed price basis, currency and tax signals, and `rateChange.reason` explains why a comparison was skipped.
 
+For US travel, hospitality and revenue-management workflows, the defaults already use USD and US English. A fixed US proxy market can make repeated observations comparable without forcing the much more expensive Residential fallback.
+
 ## Why use this Actor?
 
 - Search by destination or paste a real Booking.com search URL
 - Preserve the website filters and ordering from pasted URLs
 - Choose fast search-card data or detailed property and room data
+- Track comparable offers over time with private, bounded history—no external database required
+- Flag price drops and increases only when stay, guests, currency, market and observed offer evidence remain comparable
+- Inspect tax, currency and search-context evidence instead of treating every changed number as a real rate movement
 - Search with children ages, star ratings, price range, property type, review score, currency, language, and sorting
 - Load Booking's initial lazy-rendered batch and follow next-page links, with bounded pagination and explicit coverage limits
 - Deduplicate properties and stop exactly at `maxResults`
@@ -39,6 +44,33 @@ For recurring rate checks, enable `trackChanges` and use a stable `monitorName`,
 | Speed | Fastest | Slower: one property-page visit per result |
 
 Detailed mode is optional. Keep `scrapeDetails: false` for large listing searches, then enable it for the smaller set of properties where room and property depth matters.
+
+## US hotel-rate watch
+
+Use a fixed US market and explicit dates for a repeatable hotel-rate watch. This is useful for revenue teams, travel analysts and accommodation-market research because a changed number is not automatically reported as a valid price movement.
+
+```json
+{
+  "destinations": ["New York, New York, United States"],
+  "checkIn": "2027-01-15",
+  "checkOut": "2027-01-17",
+  "adults": 2,
+  "rooms": 1,
+  "currency": "USD",
+  "language": "en-us",
+  "maxResults": 25,
+  "scrapeDetails": false,
+  "trackChanges": true,
+  "monitorName": "nyc-january-weekend",
+  "priceChangeThresholdPercent": 5,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyCountry": "US"
+  }
+}
+```
+
+Run the same input on a schedule. The first run establishes the baseline; later runs can report `price_drop`, `price_increase`, `unchanged`, or `not_comparable`, with the reason and bounded observation history included in each row. Dates must remain in the future, so update the explicit stay window when reusing this example later.
 
 ## Input modes
 

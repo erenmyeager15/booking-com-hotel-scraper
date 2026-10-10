@@ -1,8 +1,8 @@
 {
   "actorSpecification": 1,
   "name": "booking-com-hotel-scraper",
-  "title": "Booking.com Scraper - $2/1k, Rooms, Prices & Availability",
-  "description": "Scrape Booking.com by destination or saved search URL. Export hotels, live stay prices, room options, availability, facilities, photos, policies, ratings, addresses, coordinates, and surroundings.",
+  "title": "Booking.com Scraper - $2/1k, Prices & Rate Tracking",
+  "description": "Track Booking.com hotel rates and availability by destination or saved search URL. Export live prices, comparable-offer history, change alerts, room options, tax and currency evidence, facilities, photos, policies, ratings, and coordinates.",
   "version": "1.0",
   "buildTag": "latest",
   "categories": ["TRAVEL"],
