@@ -125,9 +125,15 @@ const browserFailures: Array<Record<string, unknown>> = [];
 
 // Retry another tier only when explicitly enabled and nothing was saved. Never
 // restart productive searches on a costlier tier just to disguise partial coverage.
-for (const [tierIndex, tier] of proxyTiers.entries()) {
+// A tier may get one extra attempt in a brand-new session (new proxy session,
+// cookies and fingerprint) when Booking only redirected the search away.
+const attempts = proxyTiers.map(tier => ({ tier, freshSessionRetry: false }));
+for (let tierIndex = 0; tierIndex < attempts.length; tierIndex++) {
+  const { tier, freshSessionRetry } = attempts[tierIndex];
   if (tierIndex > 0) {
-    console.warn(`No Booking.com properties were collected using ${proxyTiers[tierIndex - 1].label}; retrying with ${tier.label}.`);
+    console.warn(freshSessionRetry
+      ? `Booking.com redirected the search away from results using ${tier.label}; retrying once in a fresh browser session.`
+      : `No Booking.com properties were collected using ${attempts[tierIndex - 1].tier.label}; retrying with ${tier.label}.`);
     resetNoResultDestinations();
   }
 
@@ -140,7 +146,7 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
     await setup.run('proxy_preflight', () => assertProxyAvailable(proxyConfiguration, 'countryCode' in tier.options ? tier.options.countryCode : undefined), 12_000);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (tierIndex < proxyTiers.length - 1) {
+    if (tierIndex < attempts.length - 1) {
       console.warn(`Could not configure ${tier.label}: ${message}. Trying the next proxy option.`);
       continue;
     }
@@ -173,7 +179,7 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
     };
   });
 
-  const crawler = createBrowserCrawler(proxyConfiguration);
+  const crawler = createBrowserCrawler(proxyConfiguration, tierIndex);
 
   try {
     // Booking's successful QA baseline already needed this browser. A separate
@@ -187,7 +193,7 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Crawler failed: ${message}`);
     if (getSavedHotelCount() > 0) { chargedHotelCount = getSavedHotelCount(); failedRequestCount++; break; }
-    if (tierIndex >= proxyTiers.length - 1) throw err;
+    if (tierIndex >= attempts.length - 1) throw err;
     continue;
   }
 
@@ -202,6 +208,16 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   // attempt is worth paying for a second time on a different proxy tier.
   const everyDestinationReportedEmpty = noResultDestinationCount >= chargedSearches.length;
   const sourceDeniedAccess = finalStates.some(state => state.coverage?.reason === 'source_access_blocked');
+  // Live 1 Nov 2026: in some proxy sessions Booking sends the search to its
+  // home page and the single in-session restoration lands there again, while
+  // a fresh session loads results. Retry only that case, once per tier, and
+  // only when nothing was saved; search events were charged once above.
+  const searchRedirectedAway = chargedHotelCount === 0 && !spendingLimitReached && !sourceDeniedAccess
+    && finalStates.some(state => state.coverage?.reason === 'source_context_redirect');
+  if (searchRedirectedAway && !freshSessionRetry) {
+    attempts.splice(tierIndex + 1, 0, { tier, freshSessionRetry: true });
+    continue;
+  }
   if (chargedHotelCount > 0 || spendingLimitReached || everyDestinationReportedEmpty || sourceDeniedAccess) break;
 }
 
@@ -306,10 +322,13 @@ function positiveIntegerParam(value: string | null | undefined): number | null {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined): PlaywrightCrawler {
+function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined, attemptIndex: number): PlaywrightCrawler {
   return new PlaywrightCrawler({
     proxyConfiguration,
     ...bookingBrowserSessions,
+    // A separate persisted pool per attempt: a retry must not restore the
+    // previous attempt's session, proxy session ID or cookies.
+    sessionPoolOptions: { ...bookingBrowserSessions.sessionPoolOptions, persistStateKey: `BOOKING_SESSION_POOL_${attemptIndex}` },
     requestHandler: withBookingSessionCookies(router),
     maxRequestRetries: 0,
     maxSessionRotations: 0,
@@ -327,8 +346,10 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
     failedRequestHandler: async ({ request, page, log }, error) => {
       failedRequestCount++;
       const state = restoreSearchState(request.userData.state as SearchState);
+      const contextRedirected = /BOOKING_SEARCH_CONTEXT_LOST_AFTER_RESTORE/.test(error instanceof Error ? error.message : String(error));
       if (state?.coverage) { state.coverage.status = 'failed'; state.coverage.reason = isBookingAccessDenied(error)
         ? 'source_access_blocked' : isBookingSessionFailure(state.coverage.reason) ? state.coverage.reason
+          : contextRedirected ? 'source_context_redirect'
           : request.label === 'detail' ? 'detail_request_failed'
           : state.coverage.reason === 'source_search_not_rendered' ? 'source_search_not_rendered' : 'search_request_failed'; }
       const message = error instanceof Error ? error.message : String(error);

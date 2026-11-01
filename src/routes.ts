@@ -554,7 +554,8 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     // locally on 1 November 2026); later batches append in about 2 s. An 8 s
     // budget expired before hydration, so the old path fell back to offset
     // URLs, which Booking ignores (same first cards: the 16/25 partial run).
-    const continuationBudget = (state.coverage?.successfulPages ?? 1) <= 1 ? 35_000 : 15_000;
+    // Cloud run rQwgL9y0ogItupF7m needed 31 s for the first append; keep margin.
+    const continuationBudget = (state.coverage?.successfulPages ?? 1) <= 1 ? 50_000 : 15_000;
     const continuation = await advanceRenderedResults(page, capReached ? 0 : Math.max(0, Math.min(continuationBudget, continuationDeadline - Date.now())), async () => {
       if (!hasSearchContext(page.url(), state) || await inspectBookingPage(page) !== 'normal') return false;
       await readSearchEvidence(); // Unknown evidence stays disclosed; contradictions throw before another action.

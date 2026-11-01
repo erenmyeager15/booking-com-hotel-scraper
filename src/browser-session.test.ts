@@ -112,9 +112,9 @@ for (const scenario of ['previous-pool', 'without-late-checkpoint', 'production-
       ...(scenario === 'previous-pool' ? { sessionPoolOptions: { maxPoolSize: 10, sessionOptions: { maxUsageCount: 10 } } } : {}),
       launchContext: { ...bookingBrowserContext, launchOptions: { headless: true } }, browserPoolOptions: bookingBrowserPool,
       maxConcurrency: 1, maxRequestRetries: 0, maxSessionRotations: 0, retryOnBlocked: false,
-      // Production allows 150 s; the first rendered-continuation wait is 35 s
+      // Production allows 150 s; the first rendered-continuation wait is 50 s
       // because live Booking hydrates its list about 10-20 s after first cards.
-      navigationTimeoutSecs: 30, requestHandlerTimeoutSecs: 60,
+      navigationTimeoutSecs: 30, requestHandlerTimeoutSecs: 90,
       preNavigationHooks: [
         ...(repaired ? [bookingSessionPreNavigation] : []),
         (async ({ page }, options) => {
