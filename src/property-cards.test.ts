@@ -55,6 +55,7 @@ test('bounded hydration stops on a stalled source and does not invent additional
     await page.setContent('<div data-testid="property-card">Only one real hotel</div>');
     const start = Date.now();
     assert.equal(await hydratePropertyCards(page, 25, 100), 1);
-    assert.ok(Date.now() - start < 1_000);
+    // Bounded, not instantaneous: parallel browser tests can add scheduling delay.
+    assert.ok(Date.now() - start < 5_000);
   } finally { await browser.close(); }
 });

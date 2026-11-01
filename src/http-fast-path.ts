@@ -6,9 +6,12 @@ import { addRateEvidence } from './rate-evidence.js';
 import { pushHotelRecord } from './records.js';
 import { restoreSearchState } from './search-state.js';
 import { proxyConfigurationProblem } from './proxy-check.js';
-import { assessSearchEvidence, htmlSearchFields } from './search-evidence.js';
+import { assessSearchEvidence, htmlSearchFields, pageCurrencyEvidence } from './search-evidence.js';
 import { searchRedirectDiagnostic } from './navigation.js';
 import { PROPERTY_CARD_SELECTOR, reportedPropertyCount } from './property-cards.js';
+import { isBookingAccessDenied, markBookingAccessDenied } from './access-policy.js';
+import { searchPageLimitReached } from './completion.js';
+import { CONTINUATION_BUTTON_NAME } from './browser-continuation.js';
 import {
   buildSearchUrl,
   classifyBookingDocument,
@@ -40,6 +43,7 @@ export interface HttpFastPathResult {
   spendingLimitReached: boolean;
   fallbackRequests: SearchRequest[];
   proxyError: string | null;
+  blockedRequestCount: number;
 }
 
 interface CheerioSelection {
@@ -57,6 +61,7 @@ export async function runHttpFastPath(
   let chargedHotelCount = 0;
   let spendingLimitReached = false;
   let proxyError: string | null = null;
+  let blockedRequestCount = 0;
   const noResultDestinations = new Set<string>();
   const fallbackRequests = new Map<string, SearchRequest>();
 
@@ -80,9 +85,10 @@ export async function runHttpFastPath(
     },
     maxConcurrency: 3,
     maxRequestRetries: 0,
-    maxSessionRotations: 1,
+    maxSessionRotations: 0,
+    retryOnBlocked: false,
     errorHandler: async ({ request }, error) => {
-      if (proxyConfigurationProblem(error)) request.noRetry = true;
+      if (proxyConfigurationProblem(error) || isBookingAccessDenied(error)) request.noRetry = true;
     },
     requestHandlerTimeoutSecs: 30,
     navigationTimeoutSecs: 20,
@@ -91,15 +97,25 @@ export async function runHttpFastPath(
       const state = restoreSearchState(request.userData.state as SearchState);
       if (proxyError || spendingLimitReached || !state.hasMore) return;
 
+      const visibleBody = $('body').clone();
+      visibleBody.find('script, style, noscript, template, [hidden], [aria-hidden="true"]').remove();
       const documentState = classifyBookingDocument(
         $('title').text(),
-        $('body').text().slice(0, 5000),
+        visibleBody.text().slice(0, 5000),
       );
-      if (documentState === 'blocked' || documentState === 'unavailable') {
+      if (documentState === 'blocked') {
+        blockedRequestCount++;
+        markBookingAccessDenied(state);
+        log.warning('BOOKING_BLOCKED: source denied access; no browser or proxy retry will be attempted.');
+        return;
+      }
+      if (documentState === 'unavailable') {
         queueBrowserFallback(state);
         return;
       }
-      const searchEvidence = assessSearchEvidence(htmlSearchFields($), state);
+      const sourceFields = htmlSearchFields($);
+      const searchEvidence = assessSearchEvidence(sourceFields, state);
+      const pageCurrency = pageCurrencyEvidence(sourceFields);
       const urlMatches = hasSearchContext(request.loadedUrl ?? request.url, state);
       // Missing form evidence does not make correctly requested, priced cards
       // unusable. Keep that uncertainty in rateEvidence; only an explicit
@@ -133,8 +149,8 @@ export async function runHttpFastPath(
 
       if (!cards.toArray().some((element) => {
         const card = $(element);
-        return parseMoney(card.find('[data-testid="price-and-discounted-price"], '
-          + '[data-testid="price-for-x-nights"], [data-testid="price-per-night"]').first().text()) !== null;
+        return ['[data-testid="price-and-discounted-price"]', '[data-testid="price-for-x-nights"]', '[data-testid="price-per-night"]']
+          .some(selector => parseMoney(firstPriceText(card, [selector])) !== null);
       })) {
         queueBrowserFallback(state);
         return;
@@ -152,11 +168,16 @@ export async function runHttpFastPath(
         const extracted = extractPropertyFromHtml($(element), state);
         const card = $(element);
         const record = extracted ? addRateEvidence(extracted, state,
-          firstText(card, ['[data-testid="price-and-discounted-price"]', '[data-testid="price-for-x-nights"]']),
-          firstText(card, ['[data-testid="price-per-night"]']), card.text(), searchVerified,
-          card.find('[data-testid="taxes-and-charges"], [data-testid="taxes-and-fees"]').toArray()
-            .map(tax => `${$(tax).text()} ${$(tax).attr('aria-label') ?? ''}`).join(' ').trim()) : null;
+          firstPriceText(card, ['[data-testid="price-and-discounted-price"]', '[data-testid="price-for-x-nights"]']),
+          firstPriceText(card, ['[data-testid="price-per-night"]']), card.text(), searchVerified,
+          card.find('[data-testid="taxes-and-charges"], [data-testid="taxes-and-fees"], [data-testid="price-and-discounted-price"][aria-label]').toArray()
+            .map(tax => `${$(tax).text()} ${$(tax).attr('aria-label') ?? ''}`)
+            .filter(label => /\b(?:tax(?:es)?|fees|charges)\b/i.test(label)).join(' ').trim(), pageCurrency) : null;
         if (!record?.propertyId) continue;
+        if (record.rateEvidence?.currencyStatus === 'mismatch') {
+          request.noRetry = true;
+          throw new Error('BOOKING_OBSERVED_CURRENCY_MISMATCH: price and page evidence contradict the requested currency');
+        }
         if (!hasUsableStayPrice(record)) continue;
         extractedOnPage++;
 
@@ -207,6 +228,18 @@ export async function runHttpFastPath(
         .attr('href');
       const currentUrl = request.loadedUrl ?? request.url;
       const nextPageUrl = resolveUrl(nextHref, currentUrl);
+      const renderedContinuation = $('button, [role="button"]').toArray().some(element => {
+        const control = $(element);
+        return !control.closest('[hidden], [aria-hidden="true"]').length
+          && CONTINUATION_BUTTON_NAME.test((control.attr('aria-label') ?? control.text()).trim());
+      });
+      if (!nextPageUrl && renderedContinuation) {
+        // The HTTP path cannot activate a client-rendered button. Preserve its
+        // real saved IDs and hand off before wasting requests on guessed offsets.
+        queueBrowserFallback(state);
+        log.info('Booking source exposes a rendered continuation control; retaining saved hotels for browser continuation.');
+        return;
+      }
       const reportedTotal = reportedPropertyCount($('h1').text());
       // Static HTML can stop at Booking's first lazy-loaded batch (currently
       // observed as 20 rows even when a 25-row result batch was requested).
@@ -251,7 +284,7 @@ export async function runHttpFastPath(
       if (progressAction === 'stop') {
         if (state.coverage) {
           const duplicate = newOnPage === 0 && duplicateOnPage > 0;
-          const capped = Math.floor(state.offset / state.pageSize) + 1 >= (state.maxPages ?? 40);
+          const capped = searchPageLimitReached(state);
           state.coverage.status = duplicate || capped ? 'limited' : state.collectedCount ? 'complete' : 'empty';
           state.coverage.reason = duplicate ? 'repeated_page' : capped ? 'page_cap' : null;
         }
@@ -260,7 +293,7 @@ export async function runHttpFastPath(
         return;
       }
 
-      if (Math.floor(state.offset / state.pageSize) + 1 >= (state.maxPages ?? 40)) {
+      if (searchPageLimitReached(state)) {
         state.hasMore = false;
         if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'page_cap'; }
         return;
@@ -285,6 +318,12 @@ export async function runHttpFastPath(
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
+      if (isBookingAccessDenied(error)) {
+        blockedRequestCount++;
+        markBookingAccessDenied(state);
+        log.warning('BOOKING_BLOCKED: source denied access; no browser or proxy retry will be attempted.');
+        return;
+      }
       log.warning(`HTTP fast path unavailable; using browser fallback for ${state.destination}.`, {
         error: message,
       });
@@ -300,6 +339,7 @@ export async function runHttpFastPath(
     spendingLimitReached,
     fallbackRequests: proxyError ? [] : [...fallbackRequests.values()],
     proxyError,
+    blockedRequestCount,
   };
 }
 
@@ -324,11 +364,11 @@ export function extractPropertyFromHtml(
     || extractIdFromHref(href)
     || propertyUrl;
   const cardText = cleanText(card.text()) ?? '';
-  const totalPrice = parseMoney(firstText(card, [
+  const totalPrice = parseMoney(firstPriceText(card, [
     '[data-testid="price-and-discounted-price"]',
     '[data-testid="price-for-x-nights"]',
   ]));
-  let pricePerNight = parseMoney(firstText(card, [
+  let pricePerNight = parseMoney(firstPriceText(card, [
     '[data-testid="price-per-night"]',
     '[data-testid*="per-night"]',
   ]));
@@ -430,6 +470,11 @@ function firstSelection(card: CheerioSelection, selectors: string[]): CheerioSel
 function firstText(card: CheerioSelection, selectors: string[]): string | null {
   const selection = firstSelection(card, selectors);
   return selection ? cleanText(selection.text()) : null;
+}
+
+function firstPriceText(card: CheerioSelection, selectors: string[]): string | null {
+  const selection = firstSelection(card, selectors);
+  return selection ? cleanText(`${selection.text()} ${selection.attr('aria-label') ?? ''}`) : null;
 }
 
 function firstAttr(card: CheerioSelection, selectors: string[], attribute: string): string | null {

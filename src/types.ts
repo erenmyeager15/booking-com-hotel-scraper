@@ -129,6 +129,8 @@ export interface RateEvidence {
   priceBasis: 'displayed_stay_total' | 'displayed_nightly_rate' | 'unpriced';
   requestedCurrency: string;
   observedCurrency: string | null;
+  observedPageCurrency?: string | null;
+  currencyEvidenceSource?: 'price_label' | 'page_currency_control' | 'unconfirmed';
   currencyStatus: 'confirmed' | 'ambiguous' | 'mismatch' | 'unknown';
   taxStatus: 'included' | 'excluded' | 'mixed' | 'unknown';
   taxText: string | null;

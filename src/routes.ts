@@ -1,4 +1,4 @@
-import { createPlaywrightRouter, SessionError } from 'crawlee';
+import { createPlaywrightRouter } from 'crawlee';
 import { Actor } from 'apify';
 import type { Page } from 'playwright';
 import type { DetailRequestData, HotelRecord, SearchState } from './types.js';
@@ -10,8 +10,11 @@ import { addRateEvidence } from './rate-evidence.js';
 import { pushHotelRecord } from './records.js';
 import { restoreSearchState } from './search-state.js';
 import { restoreSearchShell, searchRedirectDiagnostic } from './navigation.js';
-import { assessSearchEvidence, browserSearchFields } from './search-evidence.js';
+import { assessSearchEvidence, browserSearchFields, browserSearchDiagnostic, pageCurrencyEvidence } from './search-evidence.js';
 import { PROPERTY_CARD_SELECTOR, hydratePropertyCards, reportedPropertyCount } from './property-cards.js';
+import { rejectBookingAccess } from './access-policy.js';
+import { shortBatchContinuation, searchPageLimitReached } from './completion.js';
+import { advanceRenderedResults, renderedContinuationDiagnostic } from './browser-continuation.js';
 
 export const router = createPlaywrightRouter();
 const HOTEL_SCRAPED_EVENT = 'hotel-scraped';
@@ -165,7 +168,7 @@ router.addHandler('detail', async ({ page, request, crawler, session, log }) => 
   if (initialDetailState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: property error page');
   if (initialDetailState === 'blocked') {
     session?.retire();
-    throw new SessionError(`BOOKING_DETAIL_BLOCKED: ${record.propertyId}`);
+    rejectBookingAccess(request, state, `BOOKING_DETAIL_BLOCKED: ${record.propertyId}`);
   }
 
   await handleCookieConsent(page);
@@ -173,7 +176,7 @@ router.addHandler('detail', async ({ page, request, crawler, session, log }) => 
   if (detailDocumentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: property error page');
   if (detailDocumentState === 'blocked') {
     session?.retire();
-    throw new SessionError(`BOOKING_DETAIL_BLOCKED_AFTER_INTERACTION: ${record.propertyId}`);
+    rejectBookingAccess(request, state, `BOOKING_DETAIL_BLOCKED_AFTER_INTERACTION: ${record.propertyId}`);
   }
 
   await page.waitForSelector([
@@ -229,7 +232,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   if (initialDocumentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: search error page');
   if (initialDocumentState === 'blocked') {
     session?.retire();
-    throw new SessionError(`BOOKING_BLOCKED: ${state.destination} offset ${state.offset}`);
+    rejectBookingAccess(request, state, `BOOKING_BLOCKED: ${state.destination} offset ${state.offset}`);
   }
 
   try {
@@ -256,7 +259,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   if (searchDocumentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: search error page');
   if (searchDocumentState === 'blocked') {
     session?.retire();
-    throw new SessionError(`BOOKING_BLOCKED_AFTER_INTERACTION: ${state.destination} offset ${state.offset}`);
+    rejectBookingAccess(request, state, `BOOKING_BLOCKED_AFTER_INTERACTION: ${state.destination} offset ${state.offset}`);
   }
 
   // Search controls vary between Booking layouts and may be read-only or hidden.
@@ -269,32 +272,65 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     throw new Error('BOOKING_SEARCH_CONTEXT_MISMATCH: loaded search does not match the requested stay and guests');
   }
   const readSearchEvidence = async () => {
+    // Client navigation may happen after the initial URL check/card wait.
+    // Recheck before every extraction, not just at handler entry.
+    if (!hasSearchContext(page.url(), state)) {
+      request.noRetry = true;
+      throw new Error('BOOKING_SEARCH_CONTEXT_MISMATCH: rendered search lost the requested URL context');
+    }
     const evidence = assessSearchEvidence(await browserSearchFields(page), state);
     if (evidence.status === 'mismatch') {
       request.noRetry = true;
+      log.warning('Booking rendered search contradicts the requested search.', {
+        reason: evidence.reason, ...searchRedirectDiagnostic(page.url()),
+        ...await browserSearchDiagnostic(page), retainedHotels: state.collectedCount,
+      });
       throw new Error(`BOOKING_RENDERED_SEARCH_MISMATCH: ${evidence.reason}`);
     }
     return hasSearchContext(page.url(), state) && evidence.status === 'confirmed';
   };
 
+  // Keep rendered continuation in this browser document/session. New URL
+  // requests can repeat the initial client-rendered batch despite an offset.
+  const maximumContinuationDeadline = Date.now() + 110_000;
+  let continuationDeadline = Date.now() + 65_000;
+  while (true) {
   try {
-    await page.waitForSelector(propertyCardSelector(), { timeout: 18000 });
+    await waitForBookingSearchCards(page, Math.min(continuationDeadline, Date.now() + 60_000),
+      18_000, () => hasSearchContext(page.url(), state));
   } catch {
     const documentState = await inspectBookingPage(page);
     if (documentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: search error page');
     if (documentState === 'blocked') {
       session?.retire();
-      throw new SessionError(`BOOKING_BLOCKED_WHILE_WAITING: ${state.destination} offset ${state.offset}`);
+      rejectBookingAccess(request, state, `BOOKING_BLOCKED_WHILE_WAITING: ${state.destination} offset ${state.offset}`);
     }
-    // Allow hydration to finish before rejecting a form initially rendered with defaults.
-    const searchVerified = await readSearchEvidence();
-    if (documentState === 'no-results' && searchVerified) {
+    if (documentState === 'normal' && !hasSearchContext(page.url(), state)) {
+      request.noRetry = true;
+      // Share the original request's one-restoration allowance, even when the
+      // redirect occurs during hydration rather than before the handler starts.
+      if (await restoreSearchShell(page, request.url, documentState, request.userData)) {
+        continuationDeadline = Math.min(maximumContinuationDeadline, Date.now() + 65_000);
+        log.info('Restored the original search once after context was lost during the card wait.');
+        continue;
+      }
+    }
+    // A missing card page with empty/default controls is not a verified empty
+    // search, nor evidence that a different requested destination was served.
+    // Report the missing content first; do not retry the same unresolved shell.
+    if (documentState === 'no-results' && await readSearchEvidence()) {
       if (state.coverage) { state.coverage.status = state.collectedCount ? 'complete' : 'empty'; state.coverage.reason = null; }
       markNoResultIfComplete(state);
       log.info(`No more Booking.com properties at offset ${state.offset} for "${state.destination}".`);
       state.hasMore = false;
       return;
     }
+    request.noRetry = true;
+    if (state.coverage) { state.coverage.status = 'failed'; state.coverage.reason = 'source_search_not_rendered'; }
+    log.warning('Booking search did not render hotel cards or a verified empty result.', {
+      documentState, ...searchRedirectDiagnostic(page.url()),
+      ...await browserSearchDiagnostic(page), retainedHotels: state.collectedCount,
+    });
     session?.retire();
     throw new Error(`PROPERTY_CARDS_NOT_RENDERED: ${state.destination} offset ${state.offset}`);
   }
@@ -310,7 +346,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     if (documentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: search error page');
     if (documentState === 'blocked') {
       session?.retire();
-      throw new SessionError(`BOOKING_BLOCKED_EMPTY_CARDS: ${state.destination} offset ${state.offset}`);
+      rejectBookingAccess(request, state, `BOOKING_BLOCKED_EMPTY_CARDS: ${state.destination} offset ${state.offset}`);
     }
     if (documentState === 'no-results' && await readSearchEvidence()) {
       if (state.coverage) { state.coverage.status = state.collectedCount ? 'complete' : 'empty'; state.coverage.reason = null; }
@@ -335,6 +371,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   // calls become expensive across large result pages, especially when an
   // optional field is absent and waits for its timeout.
   const searchVerified = await readSearchEvidence();
+  const pageCurrency = pageCurrencyEvidence(await browserSearchFields(page));
   const cardSnapshots = await cards.evaluateAll((elements) => {
     const text = (root: Element, selector: string): string | null =>
       root.querySelector(selector)?.textContent ?? null;
@@ -342,7 +379,8 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       root.querySelector(selector)?.getAttribute(name) ?? null;
     const firstText = (root: Element, selectors: string[]): string | null => {
       for (const selector of selectors) {
-        const value = text(root, selector);
+        const element = root.querySelector(selector);
+        const value = element ? `${element.textContent ?? ''} ${element.getAttribute('aria-label') ?? ''}`.trim() : null;
         if (value) return value;
       }
       return null;
@@ -367,8 +405,9 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
         '[data-testid="property-card-title"]',
       ]),
       cardText: root.textContent,
-      taxText: Array.from(root.querySelectorAll('[data-testid="taxes-and-charges"], [data-testid="taxes-and-fees"]'))
-        .map(element => `${element.textContent ?? ''} ${element.getAttribute('aria-label') ?? ''}`).join(' ').trim() || null,
+      taxText: Array.from(root.querySelectorAll('[data-testid="taxes-and-charges"], [data-testid="taxes-and-fees"], [data-testid="price-and-discounted-price"][aria-label]'))
+        .map(element => `${element.textContent ?? ''} ${element.getAttribute('aria-label') ?? ''}`)
+        .filter(label => /\b(?:tax(?:es)?|fees|charges)\b/i.test(label)).join(' ').trim() || null,
       totalText: firstText(root, [
         '[data-testid="price-and-discounted-price"]',
         '[data-testid="price-for-x-nights"]',
@@ -423,9 +462,13 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     }
 
     const extracted = extractPropertyFromSnapshot(snapshot, state);
-    const record = extracted ? addRateEvidence(extracted, state, snapshot.totalText, snapshot.perNightText, snapshot.cardText ?? '', searchVerified, snapshot.taxText) : null;
+    const record = extracted ? addRateEvidence(extracted, state, snapshot.totalText, snapshot.perNightText, snapshot.cardText ?? '', searchVerified, snapshot.taxText, pageCurrency) : null;
 
     if (!record?.propertyId) continue;
+    if (record.rateEvidence?.currencyStatus === 'mismatch') {
+      request.noRetry = true;
+      throw new Error('BOOKING_OBSERVED_CURRENCY_MISMATCH: price and page evidence contradict the requested currency');
+    }
     if (!state.scrapeDetails && !hasUsableStayPrice(record)) continue;
     extractedOnPage++;
 
@@ -503,11 +546,68 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   }
 
   const nextPageUrl = await findNextPageUrl(page, state);
+  if (!nextPageUrl) {
+    // The page cap counts batches processed, including appended DOM batches.
+    // Do not click for another batch when it cannot be processed within the cap.
+    const capReached = searchPageLimitReached(state);
+    // The first batch is server-rendered before the list hydrates (about 10 s
+    // locally on 1 November 2026); later batches append in about 2 s. An 8 s
+    // budget expired before hydration, so the old path fell back to offset
+    // URLs, which Booking ignores (same first cards: the 16/25 partial run).
+    const continuationBudget = (state.coverage?.successfulPages ?? 1) <= 1 ? 35_000 : 15_000;
+    const continuation = await advanceRenderedResults(page, capReached ? 0 : Math.max(0, Math.min(continuationBudget, continuationDeadline - Date.now())), async () => {
+      if (!hasSearchContext(page.url(), state) || await inspectBookingPage(page) !== 'normal') return false;
+      await readSearchEvidence(); // Unknown evidence stays disclosed; contradictions throw before another action.
+      return true;
+    });
+    if (continuation !== 'absent') {
+      if (capReached) {
+        state.hasMore = false;
+        if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'page_cap'; }
+        return;
+      }
+      const documentState = await inspectBookingPage(page);
+      if (documentState === 'blocked') rejectBookingAccess(request, state, 'BOOKING_BLOCKED_AFTER_CONTINUATION');
+      if (documentState === 'unavailable') throw new Error('BOOKING_SOURCE_UNAVAILABLE: continuation error page');
+      if (!hasSearchContext(page.url(), state)) {
+        request.noRetry = true;
+        throw new Error('BOOKING_SEARCH_CONTEXT_MISMATCH: continuation changed the requested search');
+      }
+      if (continuation === 'stalled') {
+        request.noRetry = true;
+        state.hasMore = false;
+        if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'rendered_continuation_stalled'; }
+        log.warning('Booking rendered continuation produced no new property identities; stopped without an offset retry.', {
+          ...searchRedirectDiagnostic(page.url()), ...await browserSearchDiagnostic(page), retainedHotels: state.collectedCount,
+        });
+        return;
+      }
+      log.info('Booking source-rendered continuation added new properties in the current page.');
+      // Real progress earns another bounded batch window, never past the
+      // absolute handler budget below requestHandlerTimeoutSecs.
+      continuationDeadline = Math.min(maximumContinuationDeadline, Date.now() + 35_000);
+      continue;
+    }
+    log.info('Booking continuation controls absent at bounded discovery cutoff.', await renderedContinuationDiagnostic(page));
+  }
   const reportedTotal = reportedPropertyCount(await page.locator('h1').allTextContents().then(text => text.join(' ')));
-  if (cardCount < state.pageSize && !nextPageUrl && reportedTotal !== null && reportedTotal > state.offset + cardCount) {
-    state.hasMore = false;
-    if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'lazy_load_incomplete'; }
-    log.warning('More properties were reported, but the bounded lazy-load window did not fill this page. Coverage is limited, not complete.');
+  const shortBatch = !nextPageUrl ? shortBatchContinuation(state, cardCount, newOnPage, duplicateOnPage, extractedOnPage, reportedTotal) : null;
+  if (shortBatch) {
+    if (shortBatch !== 'next') {
+      state.hasMore = false;
+      if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = shortBatch; }
+      log.warning(`Short Booking batch stopped safely: ${shortBatch}.`);
+      return;
+    }
+    // Advance by actual source cards, not the requested batch size: 15→25
+    // would silently skip ten listings. Retained IDs prevent double billing if
+    // the source ignores the offset; repeated pages terminate above.
+    state.offset += cardCount;
+    await crawler.addRequests([{
+      url: buildSearchUrl(state, page.url()), uniqueKey: searchRequestKey('browser', state),
+      userData: { state }, label: 'search',
+    }]);
+    log.info(`Short Booking batch continued at actual offset ${state.offset}.`);
     return;
   }
   const progressAction = decidePageProgress({
@@ -529,7 +629,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   if (progressAction === 'stop') {
     if (state.coverage) {
       const duplicate = newOnPage === 0 && duplicateOnPage > 0;
-      const capped = Math.floor(state.offset / state.pageSize) + 1 >= (state.maxPages ?? MAX_PAGES_PER_DESTINATION);
+      const capped = searchPageLimitReached(state);
       state.coverage.status = duplicate || capped ? 'limited' : state.collectedCount ? 'complete' : 'empty';
       state.coverage.reason = duplicate ? 'repeated_page' : capped ? 'page_cap' : null;
     }
@@ -539,7 +639,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     return;
   }
 
-  if (Math.floor(state.offset / state.pageSize) + 1 >= (state.maxPages ?? MAX_PAGES_PER_DESTINATION)) {
+  if (searchPageLimitReached(state)) {
     state.hasMore = false;
     if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'page_cap'; }
     return;
@@ -557,7 +657,8 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     userData: { state },
     label: 'search',
   }]);
-
+  return;
+  }
 });
 
 function markNoResultIfComplete(state: SearchState): void {
@@ -568,6 +669,44 @@ function markNoResultIfComplete(state: SearchState): void {
 
 function propertyCardSelector(): string {
   return PROPERTY_CARD_SELECTOR;
+}
+
+/** An HTTP-200 document can still be streaming/parsed after the initial card
+ * wait. Continue waiting in this same page only while it is loading, then allow
+ * a short hydration tail. Never reset the absolute request/continuation budget,
+ * navigate, retry, or wait past a source denial/changed search. */
+export async function waitForBookingSearchCards(
+  page: Page, deadline = Date.now() + 60_000, initialTimeoutMs = 18_000,
+  searchStillMatches: () => boolean = () => true,
+): Promise<void> {
+  const remaining = () => deadline - Date.now();
+  if (!Number.isFinite(deadline) || !Number.isFinite(initialTimeoutMs) || initialTimeoutMs <= 0 || remaining() <= 0) {
+    throw new Error('BOOKING_CARD_READINESS_DEADLINE');
+  }
+  let firstError: unknown;
+  try {
+    const card = await page.waitForSelector(propertyCardSelector(), { timeout: Math.min(initialTimeoutMs, remaining()) });
+    await card?.dispose();
+    return;
+  } catch (error) { firstError = error; }
+  if (!searchStillMatches() || await inspectBookingPage(page) !== 'normal'
+    || (await browserSearchDiagnostic(page)).readyState !== 'loading') throw firstError;
+  let parsedAt: number | null = null;
+  while (remaining() > 0) {
+    try {
+      const card = await page.waitForSelector(propertyCardSelector(), { timeout: Math.max(1, Math.min(500, remaining())) });
+      await card?.dispose();
+      return;
+    } catch { /* Inspect the same document; no new source request. */ }
+    if (!searchStillMatches() || await inspectBookingPage(page) !== 'normal') throw firstError;
+    const diagnostic = await browserSearchDiagnostic(page);
+    if (diagnostic.readyState === 'loading') parsedAt = null;
+    else {
+      parsedAt ??= Date.now();
+      if (Date.now() - parsedAt >= 5_000) throw firstError;
+    }
+  }
+  throw new Error('BOOKING_CARD_READINESS_DEADLINE');
 }
 
 export function buildSearchUrl(state: SearchState, currentUrl?: string): string {
@@ -641,14 +780,25 @@ async function findNextPageUrl(page: Page, state: SearchState): Promise<string |
   }
 }
 
-async function inspectBookingPage(page: Page): Promise<BookingDocumentState> {
+export async function inspectBookingPage(page: Page): Promise<BookingDocumentState> {
   const snapshot = await page.evaluate(() => ({
     title: document.title || '',
     bodyText: (document.body?.innerText || '').slice(0, 5000),
-    hasChallengeElement: Boolean(document.querySelector(
+    // Configuration globals, script URLs and hidden reusable widgets do not
+    // establish an active challenge. Visible challenge UI still stops collection.
+    hasChallengeElement: Array.from(document.querySelectorAll(
       'iframe[src*="captcha"], [data-testid*="captcha"], #challenge-running, '
-      + '#challenge-container, script[src*="/__challenge_"], [class*="captcha"]',
-    )) || Boolean((window as typeof window & { awsWafCookieDomainList?: string[] }).awsWafCookieDomainList),
+      + '#challenge-container, [class*="captcha"]',
+    )).some(element => {
+      const box = element.getBoundingClientRect();
+      if (box.width <= 0 || box.height <= 0) return false;
+      for (let current: Element | null = element; current; current = current.parentElement) {
+        const style = getComputedStyle(current);
+        if (current.hasAttribute('hidden') || current.getAttribute('aria-hidden') === 'true'
+          || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+      }
+      return true;
+    }),
   })).catch(() => ({ title: '', bodyText: '', hasChallengeElement: false }));
 
   return classifyBookingDocument(

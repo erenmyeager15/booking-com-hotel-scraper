@@ -21,11 +21,20 @@ export function parseMoney(text: string | null): number | null {
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-export function observedCurrency(text: string, requested: string): { currency: string | null; status: 'confirmed' | 'ambiguous' | 'mismatch' | 'unknown' } {
+export function observedCurrency(text: string, requested: string, pageCurrency?: string | null): { currency: string | null; status: 'confirmed' | 'ambiguous' | 'mismatch' | 'unknown' } {
+  const explicit = new Set((text.match(/\b(?:USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|BRL|MXN|SEK|NOK|DKK|NZD|KRW|SGD|MYR|THB|TRY)\b/gi) ?? []).map(x=>x.toUpperCase()));
+  for (const [pattern,currency] of [[/US\$/,'USD'],[/NZ\$/,'NZD'],[/C\$/,'CAD'],[/A\$/,'AUD'],[/€/,'EUR'],[/£/,'GBP'],[/₹/,'INR']] as const) if(pattern.test(text))explicit.add(currency);
+  if(explicit.size>1)return {currency:null,status:'ambiguous'};
   const code = text.match(/\b(USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|BRL|MXN|SEK|NOK|DKK|NZD|KRW|SGD|MYR|THB|TRY)\b/i)?.[1].toUpperCase();
   const symbol = code ?? (/US\$/.test(text) ? 'USD' : /NZ\$/.test(text) ? 'NZD' : /C\$/.test(text) ? 'CAD' : /A\$/.test(text) ? 'AUD'
     : /€/.test(text) ? 'EUR' : /£/.test(text) ? 'GBP' : /₹|\bRs\.?/.test(text) ? 'INR' : null);
-  if (symbol) return { currency: symbol, status: symbol === requested ? 'confirmed' : 'mismatch' };
+  if (symbol) return { currency: symbol, status: symbol === requested && (!pageCurrency || pageCurrency === symbol) ? 'confirmed' : 'mismatch' };
+  if (pageCurrency) {
+    const compatible = /\$/.test(text) ? ['USD','CAD','AUD','NZD','SGD','MXN','BRL'].includes(pageCurrency)
+      : /¥/.test(text) ? ['JPY','CNY'].includes(pageCurrency) : false;
+    if (compatible) return { currency: pageCurrency, status: pageCurrency === requested ? 'confirmed' : 'mismatch' };
+    if (/\$|¥/.test(text)) return { currency: null, status: 'mismatch' };
+  }
   if (/\$|¥/.test(text)) return { currency: null, status: 'ambiguous' };
   return { currency: null, status: 'unknown' };
 }

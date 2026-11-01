@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bookingNavigationOptions, isContextFreeSearchShell, isContextFreeCityLanding,
-  restoreSearchShell, searchRedirectDiagnostic } from './navigation.js';
+  isContextFreeHomeLanding, restoreSearchShell, searchRedirectDiagnostic } from './navigation.js';
 import type { Page } from 'playwright';
 
 const target = 'https://www.booking.com/searchresults.html?ss=London&checkin=2026-11-15&checkout=2026-11-17&group_adults=2&no_rooms=1&selected_currency=GBP&nflt=class%3D5&offset=25';
@@ -9,10 +9,29 @@ function page(url: string, after = target) {
   let current = url;
   const calls: Array<{url:string;options:unknown}> = [];
   const mock = {url:()=>current,goto:async (next:string, options:unknown)=>{calls.push({url:next,options});current=after;return null;}};
-  return {port:mock as Pick<Page,'url'|'goto'>, calls};
+  const port = Object.assign(mock, { waitForFunction: async () => ({ dispose: async () => {} }) });
+  return {port:port as unknown as Pick<Page,'url'|'goto'|'waitForFunction'>, calls};
 }
-test('navigation waits for DOM rather than unrelated load completion', () => {
-  assert.deepEqual(bookingNavigationOptions(), {waitUntil:'domcontentloaded',timeout:30000});
+test('navigation has a finite response deadline, with separate content readiness', () => {
+  assert.deepEqual(bookingNavigationOptions(), {waitUntil:'commit',timeout:30000});
+});
+
+test('home restoration is restricted to canonical HTTPS Booking home pages without stay context', () => {
+  for (const url of ['https://www.booking.com/', 'https://www.booking.com/index.html',
+    'https://www.booking.com/index.en-us.html?aid=private-tracking']) assert.equal(isContextFreeHomeLanding(url), true);
+  for (const url of ['https://www.booking.com/login.html', 'https://www.booking.com/account/index.html',
+    'https://www.booking.com/consent.html', 'https://example.com/index.html', 'http://www.booking.com/',
+    'https://user:secret@www.booking.com/', 'https://www.booking.com/?checkin=2026-11-15',
+    'https://www.booking.com/?ss=London']) assert.equal(isContextFreeHomeLanding(url), false);
+});
+
+test('home route diagnostics disclose a fixed category, and denial never allows home restoration', async () => {
+  assert.equal(searchRedirectDiagnostic('https://www.booking.com/index.en-us.html?label=private-text').routeKind, 'home_landing');
+  for (const state of ['blocked', 'unavailable', 'no-results'] as const) {
+    const p = page('https://www.booking.com/index.html');
+    assert.equal(await restoreSearchShell(p.port, target, state), false);
+    assert.equal(p.calls.length, 0);
+  }
 });
 test('only context-free Booking search shells are eligible', () => {
   assert.ok(isContextFreeSearchShell('https://www.booking.com/searchresults.en-gb.html'));

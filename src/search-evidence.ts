@@ -1,6 +1,7 @@
 import type { Page } from 'playwright';
 import type { SearchState } from './types.js';
 import { PROPERTY_LINK_SELECTOR } from './property-cards.js';
+import { pageDiagnosticCounters } from './page-diagnostics.js';
 
 export const searchEvidenceSelector = 'input[name="ss"], input[name="checkin"], input[name="checkout"], '
   + 'input[name="group_adults"], input[name="group_children"], input[name="no_rooms"], '
@@ -23,7 +24,7 @@ export function htmlSearchFields($: (selector: string) => HtmlSelection): Search
     const element = selected.eq(index);
     return { name: element.attr('name') ?? '', test: element.attr('data-testid') ?? '',
       value: element.attr('href') ?? element.attr('data-date') ?? element.attr('value') ?? '',
-      text: `${element.text()} ${element.attr('aria-label') ?? ''}`,
+      text: `${element.text()} ${element.attr('aria-label') ?? ''} ${element.attr('title') ?? ''}`,
       ...(element.attr('data-date') ? { name: /check-in date/i.test(element.attr('aria-label') ?? '') ? 'selected_checkin'
         : /check-out date/i.test(element.attr('aria-label') ?? '') ? 'selected_checkout' : '' } : {}) };
   });
@@ -33,10 +34,26 @@ export async function browserSearchFields(page: Page): Promise<SearchField[]> {
   return page.locator(searchEvidenceSelector).evaluateAll(elements => elements.map(element => ({
     name: element.getAttribute('name') ?? '', test: element.getAttribute('data-testid') ?? '',
     value: element.getAttribute('href') ?? element.getAttribute('data-date') ?? ('value' in element ? String(element.value) : ''),
-    text: `${element.textContent ?? ''} ${element.getAttribute('aria-label') ?? ''}`,
+    text: `${element.textContent ?? ''} ${element.getAttribute('aria-label') ?? ''} ${element.getAttribute('title') ?? ''}`,
     ...(element.hasAttribute('data-date') ? { name: /check-in date/i.test(element.getAttribute('aria-label') ?? '') ? 'selected_checkin'
       : /check-out date/i.test(element.getAttribute('aria-label') ?? '') ? 'selected_checkout' : '' } : {}),
   })));
+}
+
+/** Structural diagnostics only: never persist page text, field values, links,
+ * cookies or HTML. Empty controls are symptoms, not proof of a source denial. */
+export async function browserSearchDiagnostic(page: Page) {
+  const structure = await page.locator(searchEvidenceSelector).evaluateAll(elements => ({
+    readyState: document.readyState,
+    destinationControls: elements.filter(element => element.getAttribute('name') === 'ss').length,
+    emptyDestinationControls: elements.filter(element => element.getAttribute('name') === 'ss'
+      && !('value' in element && String(element.value).trim())).length,
+    propertyLinks: elements.filter(element => element.getAttribute('data-testid') === 'title-link').length,
+    dateControls: elements.filter(element => element.getAttribute('data-testid') === 'searchbox-dates-container').length,
+    occupancyControls: elements.filter(element => element.getAttribute('data-testid') === 'occupancy-config').length,
+    currencyControls: elements.filter(element => element.getAttribute('data-testid') === 'header-currency-picker-trigger').length,
+  }));
+  return { ...structure, ...pageDiagnosticCounters(page) };
 }
 
 /** URL parameters are requests, not proof that Booking applied them. Only explicit
@@ -64,14 +81,20 @@ export function assessSearchEvidence(fields: SearchField[], state: SearchState):
   }
 
   const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  let fullDateLabelConfirmed = false;
   for (const field of fields.filter(f => f.test === 'searchbox-dates-container')) {
     const dates = [...field.text.matchAll(/(\d{1,2})\s*(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:\s*(20\d{2}))?/gi)];
-    if (dates.length !== 2) continue;
-    for (const [i, expected] of [state.checkIn, state.checkOut].entries()) {
-      const [, day, month, year] = dates[i];
+    // Text plus accessible labels may repeat the same two dates. Validate every
+    // pair; only an explicitly year-bearing pair can confirm full dates.
+    if (dates.length < 2 || dates.length % 2 !== 0) continue;
+    for (const [i, date] of dates.entries()) {
+      const expected = [state.checkIn, state.checkOut][i % 2];
+      const [, day, month, year] = date;
       if (Number(day) !== Number(expected.slice(8,10)) || months.indexOf(month.slice(0,3).toLowerCase()) + 1 !== Number(expected.slice(5,7))
         || (year !== undefined && year !== expected.slice(0,4))) return mismatch('rendered_date_label_mismatch');
     }
+    if (dates.some((date,i) => i % 2 === 0 && date[3] === state.checkIn.slice(0,4)
+      && dates[i+1][3] === state.checkOut.slice(0,4))) fullDateLabelConfirmed = true;
   }
   let occupancyConfirmed = false;
   for (const field of fields.filter(f => f.test === 'occupancy-config')) {
@@ -125,7 +148,7 @@ export function assessSearchEvidence(fields: SearchField[], state: SearchState):
   }
   const destinations = values('ss');
   const exactDestination = !!expectedDestination && destinations.length > 0
-    && destinations.every(value => value.toLowerCase() === expectedDestination.trim().toLowerCase());
+    && destinations.every(value => sourceDestinationMatches(value, expectedDestination));
   // Booking shortens a resolved city label to "London". Its source-rendered
   // links must also match the requested destination ID; the short label alone
   // cannot verify a country or region.
@@ -134,12 +157,38 @@ export function assessSearchEvidence(fields: SearchField[], state: SearchState):
   const destinationConfirmed = exactDestination || shortDestination;
   const datesConfirmed = ['checkin','checkout'].every(name => values(name).length > 0)
     || ['selected_checkin','selected_checkout'].every(name => values(name).length > 0)
-    || cardDatesConfirmed;
+    || cardDatesConfirmed || fullDateLabelConfirmed;
   const formGuestsConfirmed = ['group_adults','no_rooms','group_children'].every(name => values(name).length > 0);
   const guestsConfirmed = cardDatesConfirmed || ((formGuestsConfirmed || occupancyConfirmed)
     && (!childAges.length || values('age').join(',') === childAges.join(',')));
   if (!destinationConfirmed || !datesConfirmed || !guestsConfirmed) return { status: 'unknown', reason: 'rendered_search_not_confirmed' };
   return { status: 'confirmed', reason: null };
+}
+
+/** Only a unique, explicit currency from the selected page control is evidence.
+ * Neither requested URL parameters nor an unqualified dollar sign establish it. */
+export function pageCurrencyEvidence(fields: SearchField[]): string | null {
+  const supported = /\b(?:USD|EUR|GBP|JPY|CAD|AUD|CHF|CNY|INR|BRL|MXN|SEK|NOK|DKK|NZD|KRW|SGD|MYR|THB|TRY)\b/g;
+  const codes = new Set<string>();
+  for (const field of fields.filter(f => f.test === 'header-currency-picker-trigger')) {
+    for (const code of field.text.match(supported) ?? []) codes.add(code);
+    for (const [pattern, code] of [[/\b(?:US|United States) dollars?\b/i,'USD'],[/\bCanadian dollars?\b/i,'CAD'],
+      [/\bAustralian dollars?\b/i,'AUD'],[/\bNew Zealand dollars?\b/i,'NZD'],[/\bpounds? sterling\b/i,'GBP'],
+      [/\bJapanese yen\b/i,'JPY'],[/\bChinese yuan\b/i,'CNY'],[/\bIndian rupees?\b/i,'INR']] as const) {
+      if (pattern.test(field.text)) codes.add(code);
+    }
+  }
+  return codes.size === 1 ? [...codes][0] : null;
+}
+
+function sourceDestinationMatches(observed: string, expected: string): boolean {
+  if (observed.trim().toLowerCase() === expected.trim().toLowerCase()) return true;
+  const parts=(s:string)=>s.toLowerCase().split(',').map(x=>x.trim().replace(/\s+/g,' '));
+  if (!/^[\p{L}\p{M}\p{N}\s,.'’()\-]+$/u.test(observed+expected)) return false;
+  const a=parts(observed),b=parts(expected);
+  // Preserve every requested region; do not resolve an incomplete "London".
+  return b.length>=2 && a.length>=b.length && a[0]===b[0] && a.at(-1)===b.at(-1)
+    && b.slice(1,-1).every(part=>a.slice(1,-1).includes(part));
 }
 
 /** Plain, structured location labels can contradict a requested city/region.

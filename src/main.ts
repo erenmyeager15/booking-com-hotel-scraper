@@ -1,20 +1,27 @@
 import { Actor } from 'apify';
+import { getHeapStatistics } from 'node:v8';
 import { PlaywrightCrawler } from 'crawlee';
 import type { ProxyConfiguration } from 'apify';
 import type { SearchState, ActorInput } from './types.js';
 import { router, buildSearchUrl, getScrapeState, resetNoResultDestinations } from './routes.js';
-import { runHttpFastPath, type SearchRequest } from './http-fast-path.js';
 import {
   normalizeInput,
   requiresCloudProxy,
   buildProxyTiers,
   resolveSearchContext,
 } from './input.js';
-import { initializeMonitoring, finishMonitoring, monitoringCounts, getSavedHotelCount } from './records.js';
+import { initializeMonitoring, finishMonitoring, monitoringCounts, getSavedHotelCount, evidenceCounts } from './records.js';
 import { restoreSearchState } from './search-state.js';
 import { assertProxyAvailable, ProxyConfigurationError, proxyConfigurationProblem } from './proxy-check.js';
 import { StartupGuard } from './startup.js';
 import { bookingNavigationOptions } from './navigation.js';
+import { isBookingAccessDenied } from './access-policy.js';
+import { bookingCompletionStatus } from './completion.js';
+import { attachPageDiagnostics, browserFailureDiagnostic } from './page-diagnostics.js';
+import { bookingBrowserContext, bookingBrowserPool } from './browser-lifecycle.js';
+import { bookingPostNavigation } from './browser-navigation.js';
+import { BOOKING_MAX_REQUESTS_PER_CRAWL, bookingBrowserSessions, bookingSessionPreNavigation,
+  withBookingSessionCookies, isBookingSessionFailure } from './browser-session.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const DETAILED_RUN_STARTED_EVENT = 'detailed-run-started';
@@ -46,6 +53,8 @@ await Actor.exit();
 
 async function runBooking(): Promise<void> {
 
+logRuntimeMemory('startup');
+
 const input = normalizeInput((await startup.run('load_input', () => Actor.getInput<ActorInput>(), 10_000)) ?? {});
 // Resolve every saved URL before opening proxies, charging setup, or fetching pages.
 const resolvedUrls = input.searchUrls.map(url => resolveSearchContext(url, input));
@@ -53,6 +62,12 @@ const isCloudRun = Boolean(process.env.APIFY_ACTOR_RUN_ID);
 interface SearchSource {
   destination: string;
   searchUrl?: string;
+}
+interface SearchRequest {
+  url: string;
+  uniqueKey: string;
+  userData: { state: SearchState };
+  label: string;
 }
 
 const searchSources: SearchSource[] = input.searchUrls.length > 0
@@ -106,6 +121,7 @@ let noResultDestinationCount = 0;
 let spendingLimitReached = false;
 let finalStates: SearchState[] = [];
 let monitoringInitialized = false;
+const browserFailures: Array<Record<string, unknown>> = [];
 
 // Retry another tier only when explicitly enabled and nothing was saved. Never
 // restart productive searches on a costlier tier just to disguise partial coverage.
@@ -158,25 +174,15 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   });
 
   const crawler = createBrowserCrawler(proxyConfiguration);
-  let httpResult = {
-    chargedHotelCount: 0,
-    noResultDestinationCount: 0,
-    spendingLimitReached: false,
-    fallbackRequests: [] as SearchRequest[],
-    proxyError: null as string | null,
-  };
 
   try {
-    if (input.scrapeDetails) {
-      await crawler.run(initialRequests);
-    } else {
-      httpResult = await runHttpFastPath(initialRequests, proxyConfiguration);
-      if (httpResult.proxyError) throw new ProxyConfigurationError(httpResult.proxyError);
-      if (!httpResult.spendingLimitReached && httpResult.fallbackRequests.length > 0) {
-        console.info(`Using browser fallback for ${httpResult.fallbackRequests.length} unresolved Booking.com page(s).`);
-        await crawler.run(httpResult.fallbackRequests);
-      }
-    }
+    // Booking's successful QA baseline already needed this browser. A separate
+    // static fetch added another source request/session and a 20-second timeout
+    // before the same collector. Start here directly, with the same access,
+    // navigation, data and billing guards; never hide a failed probe as success.
+    logRuntimeMemory('before_browser');
+    console.info('Using browser-first Booking collection; no preliminary HTTP search.');
+    await crawler.run(initialRequests);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Crawler failed: ${message}`);
@@ -186,26 +192,29 @@ for (const [tierIndex, tier] of proxyTiers.entries()) {
   }
 
   const scrapeState = getScrapeState();
+  logRuntimeMemory('collection_finished');
   chargedHotelCount = getSavedHotelCount();
-  noResultDestinationCount = httpResult.noResultDestinationCount + scrapeState.noResultDestinationCount;
-  spendingLimitReached = httpResult.spendingLimitReached || scrapeState.spendingLimitReached;
+  noResultDestinationCount = scrapeState.noResultDestinationCount;
+  spendingLimitReached = scrapeState.spendingLimitReached;
 
   // Stop once records were collected, the user's limit was hit, or Booking.com
   // genuinely reported every destination as empty. Only an unproductive, unexplained
   // attempt is worth paying for a second time on a different proxy tier.
   const everyDestinationReportedEmpty = noResultDestinationCount >= chargedSearches.length;
-  if (chargedHotelCount > 0 || spendingLimitReached || everyDestinationReportedEmpty) break;
+  const sourceDeniedAccess = finalStates.some(state => state.coverage?.reason === 'source_access_blocked');
+  if (chargedHotelCount > 0 || spendingLimitReached || everyDestinationReportedEmpty || sourceDeniedAccess) break;
 }
 
 const allSearchesCompletedEmpty = noResultDestinationCount === chargedSearches.length
   && failedRequestCount === 0;
 if (chargedHotelCount === 0 && !allSearchesCompletedEmpty && !spendingLimitReached) {
   await Actor.setValue('OUTPUT', {
-    status: 'failed_no_results',
+    status: finalStates.some(state => state.coverage?.reason === 'source_access_blocked') ? 'blocked_access' : 'failed_no_results',
     results: 0,
     failedRequests: failedRequestCount,
     searchesAttempted: chargedSearches.length,
     spendingLimitReached,
+    searchCoverage: finalStates.map(state => ({ destination: state.destination, ...state.coverage })),
   });
   throw new Error(`No Booking.com hotel records were charged and saved. Failed requests: ${failedRequestCount}.`);
 }
@@ -227,9 +236,10 @@ if (spendingLimitReached) {
 }
 
 await Actor.setValue('OUTPUT', {
-  status: allSearchesCompletedEmpty ? 'succeeded_no_matches' : failedRequestCount > 0 || finalStates.some(s => s.coverage?.status === 'failed') ? 'partial' : 'succeeded',
+  status: bookingCompletionStatus(finalStates, failedRequestCount, allSearchesCompletedEmpty),
   mode: input.scrapeDetails ? 'detailed' : 'fast',
   results: chargedHotelCount,
+  evidenceQuality: evidenceCounts,
   failedRequests: failedRequestCount,
   searchesAttempted: chargedSearches.length,
   noResultDestinations: noResultDestinationCount,
@@ -286,6 +296,11 @@ function destinationFromSearchUrl(searchUrl: string): string | null {
   return destination || null;
 }
 
+function isFirstPartyBookingHost(url: string): boolean {
+  try { return /(?:^|\.)(?:booking\.com|bstatic\.com)$/i.test(new URL(url).hostname); }
+  catch { return false; }
+}
+
 function positiveIntegerParam(value: string | null | undefined): number | null {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -294,34 +309,43 @@ function positiveIntegerParam(value: string | null | undefined): number | null {
 function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined): PlaywrightCrawler {
   return new PlaywrightCrawler({
     proxyConfiguration,
-    useSessionPool: true,
-    persistCookiesPerSession: true,
-    sessionPoolOptions: {
-      maxPoolSize: 10,
-      sessionOptions: {
-        maxUsageCount: 10,
-      },
-    },
-    requestHandler: router,
-    maxRequestRetries: 1,
-    maxSessionRotations: 1,
+    ...bookingBrowserSessions,
+    requestHandler: withBookingSessionCookies(router),
+    maxRequestRetries: 0,
+    maxSessionRotations: 0,
     errorHandler: async ({ request }, error) => {
-      if (proxyConfigurationProblem(error)) request.noRetry = true;
+      if (proxyConfigurationProblem(error) || isBookingAccessDenied(error)) request.noRetry = true;
     },
-    retryOnBlocked: true,
+    retryOnBlocked: false,
     maxConcurrency: 1,
     maxRequestsPerMinute: 30,
     navigationTimeoutSecs: 30,
-    requestHandlerTimeoutSecs: 90,
-    maxRequestsPerCrawl: 2000,
-    failedRequestHandler: async ({ request, log }, error) => {
+    // Allow the single bounded context restoration plus card rendering while
+    // retaining the five-minute outer QA run deadline.
+    requestHandlerTimeoutSecs: 150,
+    maxRequestsPerCrawl: BOOKING_MAX_REQUESTS_PER_CRAWL,
+    failedRequestHandler: async ({ request, page, log }, error) => {
       failedRequestCount++;
       const state = restoreSearchState(request.userData.state as SearchState);
-      if (state?.coverage) { state.coverage.status = 'failed'; state.coverage.reason = request.label === 'detail' ? 'detail_request_failed' : 'search_request_failed'; }
+      if (state?.coverage) { state.coverage.status = 'failed'; state.coverage.reason = isBookingAccessDenied(error)
+        ? 'source_access_blocked' : isBookingSessionFailure(state.coverage.reason) ? state.coverage.reason
+          : request.label === 'detail' ? 'detail_request_failed'
+          : state.coverage.reason === 'source_search_not_rendered' ? 'source_search_not_rendered' : 'search_request_failed'; }
       const message = error instanceof Error ? error.message : String(error);
+      const diagnostic = { kind: request.label === 'detail' ? 'detail' : 'search',
+        timedOut: /timeout|timed out/i.test(message), ...await browserFailureDiagnostic(page) };
+      log.warning('Booking browser failure diagnostics (no page contents).', diagnostic);
+      if (browserFailures.length < 10) browserFailures.push(diagnostic);
+      // A late completion writes only diagnostics, never charges or crawl work.
+      let evidenceTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([Actor.setValue('BROWSER_FAILURES', browserFailures).catch(() => null),
+          new Promise<null>(resolve => { evidenceTimer = setTimeout(() => resolve(null), 3_000); })]);
+      } finally { if (evidenceTimer) clearTimeout(evidenceTimer); }
       log.error(`Booking.com request failed after retries: ${request.url}`, { error: message });
     },
     launchContext: {
+      ...bookingBrowserContext,
       launchOptions: {
         headless: true,
         args: [
@@ -329,13 +353,15 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
         ],
       },
     },
+    browserPoolOptions: bookingBrowserPool,
+    postNavigationHooks: [bookingPostNavigation],
     preNavigationHooks: [
+      bookingSessionPreNavigation,
       async ({ page }, gotoOptions) => {
+        attachPageDiagnostics(page);
         Object.assign(gotoOptions, bookingNavigationOptions());
         const w = 1280 + Math.floor(Math.random() * 200);
         const h = 720 + Math.floor(Math.random() * 200);
@@ -349,7 +375,10 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
           const type = route.request().resourceType();
           // Keep styles: Booking's lazy-load observer needs real layout.
           // Dropping CSS can leave an incomplete first batch.
-          if (['image', 'media', 'font'].includes(type)) {
+          // Third-party ad/analytics hosts are not needed: the challenge,
+          // cards and FullSearch continuation all load from booking.com and
+          // bstatic.com (verified live, 1 November 2026).
+          if (['image', 'media', 'font'].includes(type) || (type !== 'document' && !isFirstPartyBookingHost(route.request().url()))) {
             route.abort().catch(() => {});
           } else {
             route.continue().catch(() => {});
@@ -381,4 +410,14 @@ async function chargeDetailedRunSetup(): Promise<boolean> {
 
   const chargeResult = await Actor.charge({ eventName: DETAILED_RUN_STARTED_EVENT });
   return chargeResult.chargedCount >= 1;
+}
+
+/** Numbers only: distinguish Node memory from the container/browser peak in
+ * later cloud diagnostics without retaining source content or credentials. */
+function logRuntimeMemory(phase: 'startup' | 'before_browser' | 'collection_finished'): void {
+  const memory = process.memoryUsage();
+  const mib = (bytes: number) => Math.round(bytes / 1048576 * 10) / 10;
+  console.info(JSON.stringify({ event: 'booking_runtime_memory', phase,
+    nodeRssMiB: mib(memory.rss), nodeHeapUsedMiB: mib(memory.heapUsed),
+    nodeHeapLimitMiB: mib(getHeapStatistics().heap_size_limit), browserProfile: 'bundled-headless-shell' }));
 }

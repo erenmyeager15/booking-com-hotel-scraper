@@ -8,6 +8,7 @@ let saveRecord = (record: HotelRecord, event: string): Promise<PushResult> => Ac
 let finish = async () => {};
 let savedHotelCount = 0;
 export const monitoringCounts = { baseline: 0, compared: 0, notComparable: 0, alerts: 0, historyWriteFailures: 0, storeId: null as string | null };
+export const evidenceCounts = { saved: 0, currencyConfirmed: 0, searchVerified: 0, taxKnown: 0, comparisonEligible: 0 };
 
 export async function initializeMonitoring(input: NormalizedInput): Promise<void> {
   if (!input.trackChanges) return;
@@ -53,7 +54,14 @@ export async function initializeMonitoring(input: NormalizedInput): Promise<void
 
 export const pushHotelRecord = async (record: HotelRecord, event: string) => {
   const result = await saveRecord(record, event);
-  if (result.chargedCount > 0 || !result.eventChargeLimitReached) savedHotelCount++;
+  if (result.chargedCount > 0 || !result.eventChargeLimitReached) {
+    savedHotelCount++; evidenceCounts.saved++;
+    const evidence = record.rateEvidence;
+    if (evidence?.currencyStatus === 'confirmed') evidenceCounts.currencyConfirmed++;
+    if (evidence?.searchContextVerified) evidenceCounts.searchVerified++;
+    if (evidence && ['included','excluded'].includes(evidence.taxStatus)) evidenceCounts.taxKnown++;
+    if (evidence && evidence.comparisonWarnings.length === 0) evidenceCounts.comparisonEligible++;
+  }
   return result;
 };
 export const getSavedHotelCount = () => savedHotelCount;

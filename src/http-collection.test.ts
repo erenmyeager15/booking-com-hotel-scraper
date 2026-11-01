@@ -85,6 +85,63 @@ test('real HTTP fast path retains verified form evidence for ordinary collection
   assert.ok(saved.every(row => row.rateEvidence?.searchContextVerified === true));
 });
 
+test('HTTP preserves 20 charged hotels and hands a rendered load-more control to the browser without guessed offset requests', async () => {
+  const state = stateFor(); state.maxPages = 4;
+  const { result, saved, events, visits } = await collect(fixture(20, fullForm)
+    + '<button>Load more results</button>', state);
+  assert.equal(visits, 1); assert.equal(saved.length, 20); assert.equal(events.length, 20);
+  assert.equal(result.fallbackRequests.length, 1);
+  const retained = result.fallbackRequests[0].userData.state;
+  assert.equal(retained.offset, 0); assert.equal(retained.collectedCount, 20);
+  assert.equal(retained.seenIds.length, 20); assert.equal(retained, state);
+  assert.equal(new URL(result.fallbackRequests[0].url).searchParams.get('offset'), '0');
+});
+
+test('inactive script and hidden CAPTCHA copy cannot discard 25 genuine HTTP hotel cards', async () => {
+  const html = '<script>const captcha = "verify you are human";</script>'
+    + '<div hidden>Security check</div><div aria-hidden="true">Access denied</div>'
+    + fixture(25, fullForm);
+  const { result, saved, events } = await collect(html);
+  assert.equal(saved.length, 25);
+  assert.equal(events.length, 25);
+  assert.equal(result.fallbackRequests.length, 0);
+});
+
+test('an explicit HTTP denial is not billed, called empty, or escalated to another access method', async () => {
+  const { result, saved, events, state, visits } = await collect('<h1>Access denied</h1><p>Verify you are human</p>' + fixture());
+  assert.equal(saved.length, 0);
+  assert.equal(events.length, 0);
+  assert.equal(result.blockedRequestCount, 1);
+  assert.equal(result.fallbackRequests.length, 0);
+  assert.equal(result.noResultDestinationCount, 0);
+  assert.equal(state.coverage?.reason, 'source_access_blocked');
+  assert.equal(state.hasMore, false);
+  assert.equal(visits, 1);
+});
+
+test('HTTP collector preserves accessible USD/tax labels and does not infer currency from a bare dollar sign',async()=>{
+  const s=stateFor();s.currency='USD';s.maxResults=1;
+  const html=fixture(25,fullForm).replace('>GBP</button>','>USD</button>')
+    .replaceAll(/<span data-testid="price-and-discounted-price">GBP (\d+)<\/span>/g,
+      '<span data-testid="price-and-discounted-price" aria-label="Current price USD $1, includes taxes and charges">$$$1</span>');
+  const {saved,result}=await collect(html,s);
+  assert.equal(saved.length,1);assert.equal(result.fallbackRequests.length,0);
+  assert.equal(saved[0].rateEvidence?.currencyStatus,'confirmed');assert.equal(saved[0].rateEvidence?.taxStatus,'included');
+  assert.equal(saved[0].rateEvidence?.observedPageCurrency,'USD');
+});
+
+test('a denial on continuation retains real saved rows and reports partial coverage without recharging them', async () => {
+  const { result, saved, events, state, visits } = await collect(request =>
+    new URL(request.url).searchParams.get('offset') === '0' ? fixture(20) : '<h1>Access denied</h1>');
+  assert.equal(saved.length, 20);
+  assert.equal(events.length, 20);
+  assert.equal(result.blockedRequestCount, 1);
+  assert.equal(result.fallbackRequests.length, 0);
+  assert.equal(state.coverage?.status, 'failed');
+  assert.equal(state.coverage?.reason, 'source_access_blocked');
+  assert.equal(visits, 2);
+});
+
 test('real HTTP fast path never saves or bills cards with explicit rendered or URL contradictions', async () => {
   for (const html of [fixture(25, fullForm.replace('2026-11-15', '2027-11-15')),
     fixture(25, fullForm.replace('name="group_adults" value="2"', 'name="group_adults" value="3"')),

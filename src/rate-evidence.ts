@@ -1,8 +1,9 @@
 import type { HotelRecord, SearchState } from './types.js';
 import { observedCurrency } from './money.js';
 
-export function addRateEvidence(record: HotelRecord, state: SearchState, totalText: string | null, nightlyText: string | null, cardText: string, verified: boolean, dedicatedTaxText?: string | null): HotelRecord {
-  const currency = observedCurrency(totalText ?? nightlyText ?? '', state.currency);
+export function addRateEvidence(record: HotelRecord, state: SearchState, totalText: string | null, nightlyText: string | null, cardText: string, verified: boolean, dedicatedTaxText?: string | null, pageCurrency?: string | null): HotelRecord {
+  const priceText = totalText ?? nightlyText ?? '';
+  const currency = observedCurrency(priceText, state.currency, pageCurrency);
   const evidenceText = (dedicatedTaxText || cardText).replace(/\s+/g, ' ').trim();
   const taxText = evidenceText.match(/.{0,40}\b(?:tax(?:es)?|fees|charges)\b.{0,100}/i)?.[0]?.trim().slice(0,200) ?? null;
   const included = /\b(?:includes?|including|inclusive of|incl\.)\s+(?:all\s+)?tax(?:es)?\b|\btax(?:es)?(?:\s+(?:and|&)\s+(?:fees|charges))?\s+(?:are\s+)?included\b/i.test(evidenceText);
@@ -16,6 +17,8 @@ export function addRateEvidence(record: HotelRecord, state: SearchState, totalTe
   return { ...record, childrenAges: [...(state.childrenAges ?? [])], rateEvidence: {
     priceBasis: record.totalPrice !== null ? 'displayed_stay_total' : record.pricePerNight !== null ? 'displayed_nightly_rate' : 'unpriced',
     requestedCurrency: state.currency, observedCurrency: currency.currency, currencyStatus: currency.status,
+    observedPageCurrency: pageCurrency ?? null,
+    currencyEvidenceSource: currency.status === 'confirmed' ? observedCurrency(priceText,state.currency).status === 'confirmed' ? 'price_label' : 'page_currency_control' : 'unconfirmed',
     taxStatus, taxText, observedTotalText: totalText?.trim().slice(0, 200) ?? null,
     observedNightlyText: nightlyText?.trim().slice(0, 200) ?? null, searchContextVerified: verified,
     comparisonWarnings, comparisonScope: 'hotel_search_offer',

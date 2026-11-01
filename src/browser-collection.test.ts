@@ -5,6 +5,45 @@ import { chromium } from 'playwright';
 import { router, buildSearchUrl } from './routes.js';
 import { emptyMonitor, prepareRateChange } from './monitor.js';
 import type { HotelRecord, SearchState } from './types.js';
+import { bookingCompletionStatus } from './completion.js';
+import { browserSearchDiagnostic } from './search-evidence.js';
+import { advanceRenderedResults } from './browser-continuation.js';
+import { bookingNavigationOptions, waitForBookingDocument } from './navigation.js';
+
+test('empty rendered search stops without hotel charges, retries or exposing page contents', async () => {
+  const browser = await chromium.launch({ headless: true }), originalPush = Actor.pushData;
+  let charges = 0, visits = 0;
+  Actor.pushData = (async () => { charges++; throw new Error('No hotel may be billed'); }) as unknown as typeof Actor.pushData;
+  try {
+    const page = await browser.newPage(), state = stateFor('empty-search-diagnostic', 25);
+    await page.route('**/*', route => {
+      visits++;
+      return route.fulfill({ contentType: 'text/html', body: '<title>private-page-title</title>'
+        + '<input name="ss" value=""><input name="checkin" value="private-date">'
+        + '<button data-testid="occupancy-config">private-guests</button>'
+        + '<a href="https://private.example/secret">private-text</a>' });
+    });
+    const request = { url: buildSearchUrl(state), label: 'search', noRetry: false, userData: { state } };
+    await page.goto(request.url);
+    // Exercise the actual timeout branch without spending 18 seconds on a
+    // fully intercepted page whose absence of cards is deterministic.
+    page.waitForSelector = (async () => { throw new Error('fixture card wait expired'); }) as typeof page.waitForSelector;
+    const warnings: unknown[] = [];
+    await assert.rejects(async () => router({ page, request,
+      log: { info: () => {}, debug: () => {}, warning: (_message: string, details: unknown) => warnings.push(details) },
+      crawler: { addRequests: () => { throw new Error('No retry or next page permitted'); } },
+    } as unknown as Parameters<typeof router>[0]), /PROPERTY_CARDS_NOT_RENDERED/);
+    assert.equal(request.noRetry, true);
+    assert.equal(charges, 0); assert.equal(visits, 1);
+    assert.equal(state.coverage?.reason, 'source_search_not_rendered');
+    assert.equal(bookingCompletionStatus([state], 1, false), 'partial');
+    assert.equal(warnings.length, 1);
+    const diagnostic = await browserSearchDiagnostic(page);
+    assert.equal(diagnostic.emptyDestinationControls, 1);
+    assert.equal(diagnostic.propertyLinks, 0);
+    assert.equal(/private|London|2026-|2601889|booking\.com/.test(JSON.stringify(warnings)), false);
+  } finally { Actor.pushData = originalPush; await browser.close(); }
+});
 
 const stateFor = (name: string, maxResults: number): SearchState => ({
   destination: 'London, United Kingdom', requestNamespace: name,
@@ -32,6 +71,275 @@ function fixtureHtml(offset: number, options: { destinationInput?: string; cardP
     + '<script>addEventListener("scroll",()=>{if(!document.getElementById("loaded")){const extra=document.createElement("div");extra.id="loaded";extra.innerHTML='
     + JSON.stringify(Array.from({ length: 15 }, (_, index) => card(offset + 15 + index)).join('')) + ';document.body.append(extra);}});</script>';
 }
+
+for (const wrongStay of [false, true]) {
+  test(`deferred script stalls DOMContentLoaded: ${wrongStay ? 'wrong stay is rejected' : '25 verified hotels are saved without waiting for it'}`, async () => {
+    const browser = await chromium.launch({ headless: true }), originalPush = Actor.pushData;
+    const saved: HotelRecord[] = []; const events: string[] = [];
+    let releaseScript!: () => void, visits = 0, scriptRequests = 0, domReady = false;
+    const blockedScript = new Promise<void>(resolve => { releaseScript = resolve; });
+    Actor.pushData = (async (record: HotelRecord, event: string) => {
+      saved.push(record); events.push(event); return { chargedCount: 1, eventChargeLimitReached: false };
+    }) as unknown as typeof Actor.pushData;
+    try {
+      const page = await browser.newPage(), state = stateFor(`deferred-script-${wrongStay}`, 25);
+      page.on('domcontentloaded', () => { domReady = true; });
+      await page.route('**/*', async route => {
+        if (route.request().resourceType() === 'script') {
+          scriptRequests++; await blockedScript;
+          return route.fulfill({ contentType: 'text/javascript', body: '/* offline deferred script */' }).catch(() => {});
+        }
+        assert.equal(route.request().resourceType(), 'document'); visits++;
+        return route.fulfill({ contentType: 'text/html', body:
+          '<html><head><script defer src="https://www.booking.com/offline-deferred.js"></script></head><body>'
+          + fixtureHtml(0, wrongStay ? { cardParameters: { checkin: '2027-01-01' } } : {}) + '</body></html>' });
+      });
+      const request = { url: buildSearchUrl(state), label: 'search', noRetry: false, userData: { state } };
+      await page.goto(request.url, bookingNavigationOptions());
+      await waitForBookingDocument(page);
+      assert.equal(domReady, false, 'deferred script must still block DOMContentLoaded');
+      const collect = async () => router({ page, request,
+        log: { info: () => {}, warning: () => {}, debug: () => {} },
+        crawler: { addRequests: () => { throw new Error('No retry or extra page allowed'); } },
+      } as unknown as Parameters<typeof router>[0]);
+      if (wrongStay) await assert.rejects(collect, /BOOKING_RENDERED_SEARCH_MISMATCH/);
+      else await collect();
+      assert.equal(saved.length, wrongStay ? 0 : 25);
+      assert.equal(new Set(saved.map(row => row.propertyId)).size, saved.length);
+      assert.ok(events.every(event => event === 'hotel-scraped'));
+      assert.ok(saved.every(row => row.rateEvidence?.searchContextVerified && row.rateEvidence.currencyStatus === 'confirmed'));
+      assert.equal(domReady, false); assert.equal(visits, 1); assert.equal(scriptRequests, 1);
+    } finally { releaseScript(); Actor.pushData = originalPush; await browser.close(); }
+  });
+}
+
+for (const scenario of [
+  { mode: 'append', limit: 25 }, { mode: 'append', limit: 50 },
+  { mode: 'replace', limit: 50 }, { mode: 'changed-stay', limit: 25 },
+  { mode: 'denied', limit: 25 }, { mode: 'cap', limit: 25 }, { mode: 'stalled', limit: 25 },
+  { mode: 'retained-http', limit: 25 },
+  { mode: 'delayed-control', limit: 25 }, { mode: 'delayed-append', limit: 25 }, { mode: 'delayed-denied', limit: 25 },
+  { mode: 'delayed-changed-stay', limit: 25 },
+] as const) {
+  test(`source-rendered continuation: ${scenario.mode}/${scenario.limit} uses one document and exact unique charges`, async () => {
+    const browser = await chromium.launch({ headless: true }), originalPush = Actor.pushData;
+    const saved: HotelRecord[] = []; let visits = 0;
+    let afterFirstBatch = async () => {};
+    Actor.pushData = (async (record: HotelRecord) => {
+      saved.push(record); if (saved.length === 20) await afterFirstBatch();
+      return { chargedCount: 1, eventChargeLimitReached: false };
+    }) as unknown as typeof Actor.pushData;
+    try {
+      const page = await browser.newPage(), state = stateFor(`rendered-${scenario.mode}-${scenario.limit}`, scenario.limit);
+      if (scenario.mode === 'cap') state.maxPages = 1;
+      const retainedCount = scenario.mode === 'retained-http' ? 20 : 0;
+      if (retainedCount) {
+        state.collectedCount = retainedCount;
+        state.seenIds = Array.from({ length: retainedCount }, (_, i) => `offline-${i}`);
+        state.coverage!.successfulPages = 1;
+      }
+      const html = fixtureHtml(0).replace(/<script>[\s\S]*$/, '')
+        + '<button id="more">Load more results</button><script>'
+        + `const mode=${JSON.stringify(scenario.mode)};let batch=0;window.moreClicks=0;`
+        + `const template=document.querySelector('[data-testid="property-card"]').cloneNode(true);`
+        + `function card(index){const root=template.cloneNode(true);const link=root.querySelector('[data-testid="title-link"]');link.href=link.href.replace(/offline-\\d+/, 'offline-'+index);root.querySelector('[data-testid="title"]').textContent='Hotel '+index;return root;}`
+        + `for(let i=15;i<20;i++)document.body.insertBefore(card(i),document.getElementById('more'));`
+        + `if(mode.startsWith('delayed-'))document.getElementById('more').hidden=true;
+          window.revealMore=()=>setTimeout(()=>{
+            if(mode==='delayed-append'){for(let i=20;i<25;i++)document.body.insertBefore(card(i),document.getElementById('more'));return;}
+            if(mode==='delayed-denied'){document.body.innerHTML='<h1>Access denied</h1>';return;}
+            if(mode==='delayed-changed-stay'){document.querySelector('[data-testid="searchbox-dates-container"]').textContent='1 Jan 2027 — 2 Jan 2027';return;}
+            document.getElementById('more').hidden=false;
+          },300);
+          document.getElementById('more').onclick=()=>{window.moreClicks++;batch++;
+          if(mode==='stalled')return;
+          if(mode==='denied'){document.body.innerHTML='<h1>Access denied</h1>';return;}
+          if(mode==='changed-stay')document.querySelector('[data-testid="searchbox-dates-container"]').textContent='1 Jan 2027 — 2 Jan 2027';
+          if(mode==='replace')document.querySelectorAll('[data-testid="property-card"]').forEach(card=>card.remove());
+          for(let i=batch*20;i<(batch+1)*20;i++)document.body.insertBefore(card(i),document.getElementById('more'));
+        };</script>`;
+      await page.route('**/*', route => {
+        assert.equal(route.request().resourceType(), 'document'); visits++;
+        assert.equal(visits, 1, 'offset URL navigation would repeat the same source page');
+        return route.fulfill({ contentType: 'text/html', body: html });
+      });
+      const request = { url: buildSearchUrl(state), label: 'search', noRetry: false, userData: { state } };
+      await page.goto(request.url);
+      if (scenario.mode.startsWith('delayed-')) afterFirstBatch = async () => {
+        await page.evaluate(() => (window as unknown as { revealMore: () => void }).revealMore());
+      };
+      const collect = async () => router({ page, request,
+        log: { info: () => {}, warning: () => {}, debug: () => {} },
+        crawler: { addRequests: () => { throw new Error('Must retain the current browser page'); } },
+      } as unknown as Parameters<typeof router>[0]);
+      if (['changed-stay', 'delayed-changed-stay'].includes(scenario.mode)) await assert.rejects(collect, /BOOKING_RENDERED_SEARCH_MISMATCH/);
+      else if (['denied', 'delayed-denied'].includes(scenario.mode)) await assert.rejects(collect, /BOOKING_BLOCKED_AFTER_CONTINUATION/);
+      else await collect();
+      const incomplete = ['changed-stay', 'denied', 'cap', 'stalled', 'delayed-denied', 'delayed-changed-stay'].includes(scenario.mode);
+      assert.equal(saved.length, (incomplete ? 20 : scenario.limit) - retainedCount);
+      assert.equal(new Set(saved.map(row => row.propertyId)).size, saved.length);
+      assert.equal(state.collectedCount, saved.length + retainedCount); assert.equal(visits, 1);
+      if (retainedCount) assert.ok(saved.every(row => !Array.from({ length: 20 }, (_, i) => `offline-${i}`).includes(row.propertyId)));
+      assert.equal(await page.evaluate(() => (window as unknown as { moreClicks: number }).moreClicks),
+        ['cap', 'delayed-append', 'delayed-denied', 'delayed-changed-stay'].includes(scenario.mode) ? 0 : scenario.limit === 50 ? 2 : 1);
+      if (scenario.mode === 'cap') assert.equal(state.coverage?.reason, 'page_cap');
+      if (scenario.mode === 'stalled') {
+        assert.equal(state.coverage?.reason, 'rendered_continuation_stalled');
+        assert.equal(bookingCompletionStatus([state], 0, false), 'partial');
+        assert.equal(request.noRetry, true);
+      }
+      if (!incomplete) assert.equal(state.coverage?.reason, 'max_results');
+    } finally { Actor.pushData = originalPush; await browser.close(); }
+  });
+}
+
+test('rendered continuation cannot count duplicates, hidden controls or ambiguous buttons as progress', async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body:
+      fixtureHtml(0).replace(/<script>[\s\S]*$/, '') + '<button onclick="window.clicks=(window.clicks||0)+1">Load more results</button>' }));
+    await page.goto(buildSearchUrl(stateFor('rendered-stall', 25)));
+    // Allow Playwright to scroll this below-the-fold control and establish
+    // click stability under parallel browser load; assert it was clicked once.
+    // The shorter 200 ms budget could expire before the fixture click occurred.
+    assert.equal(await advanceRenderedResults(page, 2_000), 'stalled');
+    assert.equal(await page.evaluate(() => (window as unknown as { clicks: number }).clicks), 1);
+    await page.evaluate(() => { const button = document.querySelector('button[onclick]')!; button.setAttribute('hidden', ''); });
+    assert.equal(await advanceRenderedResults(page, 200), 'absent');
+    await page.evaluate(() => { const button = document.querySelector('button[onclick]')!; button.removeAttribute('hidden'); document.body.append(button.cloneNode(true)); });
+    assert.equal(await advanceRenderedResults(page, 200), 'stalled');
+    assert.equal(await page.evaluate(() => (window as unknown as { clicks: number }).clicks), 1);
+    await page.evaluate(() => {
+      const buttons = document.querySelectorAll('button[onclick]');
+      for (const button of Array.from(buttons).slice(1)) button.remove();
+      buttons[0].setAttribute('disabled', '');
+    });
+    assert.equal(await advanceRenderedResults(page, 200), 'stalled');
+    assert.equal(await page.evaluate(() => (window as unknown as { clicks: number }).clicks), 1);
+  } finally { await browser.close(); }
+});
+
+for (const mode of ['recovered', 'persistent', 'blocked', 'used', 'unknown'] as const) {
+  test(`context lost during card wait: ${mode} preserves the one-restoration budget and exact billing`, async () => {
+    const browser = await chromium.launch({ headless: true }), originalPush = Actor.pushData;
+    const saved: HotelRecord[] = []; let searches = 0, landings = 0;
+    Actor.pushData = (async (record: HotelRecord) => { saved.push(record); return { chargedCount: 1, eventChargeLimitReached: false }; }) as unknown as typeof Actor.pushData;
+    try {
+      const page = await browser.newPage(), state = stateFor(`late-context-${mode}`, 25);
+      const landing = mode === 'unknown' ? 'https://www.booking.com/account/login.html' : 'https://www.booking.com/index.en-us.html';
+      await page.route('**/*', route => {
+        assert.equal(route.request().resourceType(), 'document');
+        if (new URL(route.request().url()).pathname.startsWith('/searchresults')) {
+          searches++; assert(searches <= 2, 'at most one exact search restoration');
+          return route.fulfill({ contentType: 'text/html', body: searches === 1 ? '<input name="ss" value="London">' : fixtureHtml(0) });
+        }
+        landings++; assert(landings <= 2);
+        return route.fulfill({ contentType: 'text/html', body: mode === 'blocked' ? '<h1>Access denied</h1>'
+          : '<input name="ss" value=""><button data-testid="searchbox-dates-container"></button>' });
+      });
+      const request = { url: buildSearchUrl(state), label: 'search', noRetry: false,
+        userData: { state, bookingSearchShellRestoreAttempted: mode === 'used' } };
+      await page.goto(request.url);
+      // Model a persistent redirected navigation at the Page boundary rather
+      // than using a 302: Playwright may follow a redirect outside this route
+      // handler, which would invalidate an offline fixture.
+      const originalGoto = page.goto.bind(page); const restoreTargets: string[] = [];
+      page.goto = (async (url: string, options: unknown) => {
+        if (url === request.url) {
+          restoreTargets.push(url);
+          if (mode === 'persistent') return originalGoto(landing, options as Parameters<typeof originalGoto>[1]);
+        }
+        return originalGoto(url, options as Parameters<typeof originalGoto>[1]);
+      }) as typeof page.goto;
+      const originalWait = page.waitForSelector.bind(page); let redirected = false;
+      page.waitForSelector = (async (selector: string, options: unknown) => {
+        if (!redirected && selector.includes('property-card')) {
+          redirected = true; await page.goto(landing); throw new Error('fixture: context lost while waiting for cards');
+        }
+        return originalWait(selector, options as Parameters<typeof originalWait>[1]);
+      }) as typeof page.waitForSelector;
+      const collect = async () => router({ page, request, crawler: {},
+        log: { info: () => {}, warning: () => {}, debug: () => {} },
+      } as unknown as Parameters<typeof router>[0]);
+      if (mode === 'recovered') await collect();
+      else await assert.rejects(collect, mode === 'blocked' ? /BOOKING_BLOCKED_WHILE_WAITING/
+        : mode === 'unknown' ? /PROPERTY_CARDS_NOT_RENDERED/ : /CONTEXT_LOST/);
+      assert.equal(saved.length, mode === 'recovered' ? 25 : 0);
+      assert.equal(new Set(saved.map(row => row.propertyId)).size, saved.length);
+      assert.equal(searches, mode === 'recovered' ? 2 : 1);
+      assert.deepEqual(restoreTargets, mode === 'recovered' || mode === 'persistent' ? [request.url] : []);
+      if (mode === 'recovered') assert(saved.every(row => row.rateEvidence?.searchContextVerified));
+      if (mode === 'used' || mode === 'persistent') assert.equal(request.noRetry, true);
+    } finally { Actor.pushData = originalPush; await browser.close(); }
+  });
+}
+
+test('a late URL change cannot save otherwise matching priced cards from a different search', async () => {
+  const browser = await chromium.launch({ headless: true }), originalPush = Actor.pushData;
+  let charged = 0;
+  Actor.pushData = (async () => { charged++; throw new Error('Wrong search must not be billed'); }) as unknown as typeof Actor.pushData;
+  try {
+    const page = await browser.newPage(), state = stateFor('late-wrong-url', 25);
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: fixtureHtml(0) }));
+    const request = { url: buildSearchUrl(state), label: 'search', noRetry: false, userData: { state } };
+    await page.goto(request.url);
+    const originalWait = page.waitForSelector.bind(page); let changed = false;
+    page.waitForSelector = (async (selector: string, options: unknown) => {
+      if (!changed && selector.includes('property-card')) {
+        changed = true; const url = new URL(request.url); url.searchParams.set('group_adults', '3'); await page.goto(url.toString());
+      }
+      return originalWait(selector, options as Parameters<typeof originalWait>[1]);
+    }) as typeof page.waitForSelector;
+    await assert.rejects(async () => router({ page, request, crawler: {}, log: { info: () => {}, warning: () => {}, debug: () => {} } } as unknown as Parameters<typeof router>[0]), /BOOKING_SEARCH_CONTEXT_MISMATCH/);
+    assert.equal(charged, 0); assert.equal(request.noRetry, true);
+  } finally { Actor.pushData = originalPush; await browser.close(); }
+});
+
+for (const mode of ['continue','repeat','cap'] as const) {
+  test(`stalled 15-card browser batch: ${mode} is bounded and never skips or rebills source rows`, async () => {
+    const browser=await chromium.launch({headless:true}),originalPush=Actor.pushData;
+    const saved:HotelRecord[]=[],events:string[]=[],offsets:number[]=[];
+    Actor.pushData=(async (record:HotelRecord,event:string)=>{saved.push(record);events.push(event);return {chargedCount:1,eventChargeLimitReached:false};}) as unknown as typeof Actor.pushData;
+    try {
+      const page=await browser.newPage(),state=stateFor(`offline-stall-${mode}`,25);
+      if(mode==='cap')state.maxPages=1;
+      await page.route('**/*',route=>{
+        if(route.request().resourceType()!=='document')return route.abort();
+        const offset=Number(new URL(route.request().url()).searchParams.get('offset')??0);offsets.push(offset);
+        assert(offsets.length<=2,'at most two source pages');
+        return route.fulfill({contentType:'text/html',body:fixtureHtml(mode==='repeat'?0:offset).replace(/<script>[\s\S]*$/,'')});
+      });
+      const pending=[{url:buildSearchUrl(state),userData:{state}}];
+      while(pending.length){const request=pending.shift()!;await page.goto(request.url);
+        await router({page,request:{...request,label:'search'},log:{info:()=>{},debug:()=>{},warning:()=>{}},
+          crawler:{addRequests:async (requests:typeof pending)=>{pending.push(...requests);}},
+        } as unknown as Parameters<typeof router>[0]);
+      }
+      assert.equal(saved.length,mode==='continue'?25:15);
+      assert.equal(new Set(saved.map(row=>row.propertyId)).size,saved.length);
+      assert.equal(events.length,saved.length);
+      assert.deepEqual(offsets,mode==='cap'?[0]:[0,15]);
+      assert.equal(state.coverage?.reason,mode==='continue'?'max_results':mode==='repeat'?'repeated_page':'page_cap');
+      assert.equal(bookingCompletionStatus([state],0,false),mode==='continue'?'succeeded':'partial');
+    } finally {Actor.pushData=originalPush;await browser.close();}
+  });
+}
+
+test('browser collector uses explicit page currency and accessible price/tax labels, not requested USD alone',async()=>{
+  const browser=await chromium.launch({headless:true}),originalPush=Actor.pushData,saved:HotelRecord[]=[];
+  Actor.pushData=(async(record:HotelRecord)=>{saved.push(record);return {chargedCount:1,eventChargeLimitReached:false};}) as unknown as typeof Actor.pushData;
+  try {
+    const page=await browser.newPage(),state=stateFor('offline-price-labels',1);state.currency='USD';state.searchUrl=state.searchUrl!.replace('selected_currency=GBP','selected_currency=USD');
+    const html=fixtureHtml(0,{currency:'USD'}).replaceAll('£','$').replaceAll('>Includes taxes and charges</span>',' aria-label="Includes taxes and charges"></span>');
+    await page.route('**/*',route=>route.request().resourceType()==='document'?route.fulfill({contentType:'text/html',body:html}):route.abort());
+    const request={url:buildSearchUrl(state),label:'search',userData:{state}};await page.goto(request.url);
+    await router({page,request,log:{info:()=>{},debug:()=>{},warning:()=>{}},crawler:{}} as unknown as Parameters<typeof router>[0]);
+    assert.equal(saved.length,1);assert.equal(saved[0].rateEvidence?.currencyStatus,'confirmed');
+    assert.equal(saved[0].rateEvidence?.observedPageCurrency,'USD');assert.equal(saved[0].rateEvidence?.currencyEvidenceSource,'page_currency_control');
+    assert.equal(saved[0].rateEvidence?.taxStatus,'included');
+  } finally {Actor.pushData=originalPush;await browser.close();}
+});
 
 test('unresolved destination with read-only or hidden controls still collects 25 priced rows without form edits or false alerts', async () => {
   const browser = await chromium.launch({ headless: true });

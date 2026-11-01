@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { load } from 'cheerio';
 import { chromium } from 'playwright';
-import { assessSearchEvidence, browserSearchFields, htmlSearchFields } from './search-evidence.js';
-import { buildSearchUrl, hasSearchContext, classifyBookingDocument, router } from './routes.js';
+import { assessSearchEvidence, browserSearchFields, htmlSearchFields, pageCurrencyEvidence } from './search-evidence.js';
+import { buildSearchUrl, hasSearchContext, classifyBookingDocument, inspectBookingPage, router } from './routes.js';
 import type { SearchState } from './types.js';
 
 const state = { destination: 'London, United Kingdom', checkIn: '2026-11-15', checkOut: '2026-11-17',
@@ -13,6 +13,39 @@ const form = '<input name="ss" value="London, United Kingdom"><input name="check
   + '<input name="checkout" value="2026-11-17"><input name="group_adults" value="2"><input name="no_rooms" value="1">'
   + '<input name="group_children" value="0">';
 const assess = (html: string) => assessSearchEvidence(htmlSearchFields(load(html)), state);
+
+test('explicit currency control evidence supports ISO and named currencies but not an unqualified symbol',()=>{
+  const read=(label:string)=>pageCurrencyEvidence(htmlSearchFields(load(`<button data-testid="header-currency-picker-trigger" aria-label="${label}"></button>`)));
+  assert.equal(read('Prices in United States dollars'),'USD');assert.equal(read('Prices in CAD'),'CAD');
+  assert.equal(read('Choose your currency $'),null);assert.equal(read('USD or CAD'),null);
+});
+test('full-year rendered date labels and a fully specified destination can confirm a stay without hidden date inputs',()=>{
+  const html='<input name="ss" value="London, Greater London, United Kingdom">'
+    +'<button data-testid="searchbox-dates-container" aria-label="15 November 2026 — 17 November 2026">15 Nov — 17 Nov</button>'
+    +'<button data-testid="occupancy-config">2 adults · 0 children · 1 room</button>';
+  assert.equal(assess(html).status,'confirmed');
+  assert.equal(assess(html.replaceAll('2026','2027')).status,'mismatch');
+  assert.equal(assess(html.replaceAll('London, Greater London, United Kingdom','London')).status,'unknown');
+  assert.equal(assess(html.replaceAll('London, Greater London, United Kingdom','London, Canada')).status,'mismatch');
+});
+
+test('inactive WAF configuration and hidden challenge placeholders are not an active block', async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.route('**/*', route => route.abort());
+    await page.setContent('<h1>London: 25 properties found</h1>'
+      + '<script>window.awsWafCookieDomainList = [".booking.com"];</script>'
+      + '<div hidden id="challenge-container">Verify you are human</div>'
+      + '<div style="display:none"><div class="captcha-widget">Security check</div></div>'
+      + '<div data-testid="property-card">A real rendered property card</div>');
+    assert.equal(await inspectBookingPage(page), 'normal');
+    await page.setContent('<div id="challenge-container">Verify you are human</div>');
+    assert.equal(await inspectBookingPage(page), 'blocked');
+    await page.setContent('<h1>Access denied</h1><div data-testid="property-card">stale cached card</div>');
+    assert.equal(await inspectBookingPage(page), 'blocked');
+  } finally { await browser.close(); }
+});
 
 test('Booking HTTP-202 error shell is unavailable, not empty inventory or a bot block', () => {
   const body = "Oops! Something went wrong on our end. We're working hard to fix it. Error code: 502 Try again";
