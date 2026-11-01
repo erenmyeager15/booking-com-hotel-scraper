@@ -13,8 +13,8 @@ a live challenge. If some hotels were already saved, they remain saved and bille
 once, with failed/partial coverage reported. A blocked zero-result run fails;
 it is never presented as successful empty availability.
 
-Short lazy-loaded batches use bounded offset continuation and deduplication;
-an ignored offset or the configured page cap produces explicit partial coverage.
+Further results are loaded in the same page with bounded waits and deduplication;
+a stalled continuation or the configured page cap produces explicit partial coverage.
 The top-level `OUTPUT.status` is `partial` for incomplete source coverage, even
 when individual requests succeeded. Reaching your result/spending limit is an
 intentional stop. `OUTPUT.evidenceQuality` summarizes saved rows with confirmed
@@ -36,7 +36,7 @@ For US travel, hospitality and revenue-management workflows, the defaults alread
 - Flag price drops and increases only when stay, guests, currency, market and observed offer evidence remain comparable
 - Inspect tax, currency and search-context evidence instead of treating every changed number as a real rate movement
 - Search with children ages, star ratings, price range, property type, review score, currency, language, and sorting
-- Load Booking's initial lazy-rendered batch and follow next-page links, with bounded pagination and explicit coverage limits
+- Load further results the way Booking's page does (scrolling in the same page and its Load more results button), with bounded pagination and explicit coverage limits
 - Deduplicate properties and stop exactly at `maxResults`
 - Use datacenter proxy first; optional Residential fallback is off by default and limited to one search page
 - Bill hotel result events only for clean records saved; start/setup events are separate
@@ -185,7 +185,7 @@ The container budgets 256 MB for Node's old-space heap and 16 MB per young-gener
 
 Booking may redirect a saved search to an undated city landing page or a search shell. These pages are not stay or availability evidence. The Actor permits one return to the exact original search URL, preserving its dates, guests and filters; a persistent redirect fails without saving or charging results from the redirected page. Valid hotels saved earlier in the run are retained and are not charged again. The same restoration allowance is retained across crawler retries; check `OUTPUT.status` and `searchCoverage` for an interrupted, partial search.
 
-Booking can expose fewer cards than the requested page size before lazy-loading the rest. The browser uses bounded hydration and source-rendered continuation when available, then bounded links/offsets from the cards actually received. If Booking repeats or ignores that continuation, prior IDs are retained and cannot be billed again.
+Booking can expose fewer cards than the requested page size before lazy-loading the rest. The browser scrolls the same page and uses the source's own continuation first, then bounded links/offsets from the cards actually received. If Booking repeats or ignores that continuation, prior IDs are retained and cannot be billed again.
 
 History is private to the run account, Actor and monitor name, bounded to 1,000 property/stay contexts and 2–30 observations per context. Use non-overlapping scheduled runs; simultaneous runs sharing one monitor are not supported. Changing dates creates a different baseline. Future defaults change the stay each day, so use explicit dates for a meaningful repeat comparison.
 
@@ -263,12 +263,14 @@ Booking.com varies fields by property, market, dates, device layout, and experim
 
 ## Pagination
 
-The Actor first uses Booking.com's actual **Next page** URL. This preserves destination IDs, filters, experiments, and other search context that can be lost when an offset is constructed from scratch. If a next link is not exposed, the Actor falls back to the current resolved URL with a bounded offset.
+Booking.com's search page shows its first 15–25 properties and then adds more in the same page as you scroll, with a **Load more results** button after roughly 100. The Actor collects further results the same way: it scrolls to the end of the list in the same browser page and, when present, uses that single button. It does not rely on offset URLs, which Booking currently ignores. A Booking **Next page** link is followed if one is exposed, and a bounded offset request remains only as a last resort; repeated properties are never saved or billed twice.
 
-Pagination stops when any of these is true:
+If Booking redirects a search to its home page before any property is saved, the search is retried once in a fresh browser session on the same proxy type. The search event is charged once.
+
+Each loaded batch counts as one page toward `maxPagesPerSearch`. Pagination stops when any of these is true:
 
 - `maxResults` is reached
-- Booking.com has no next page
+- Booking.com adds no further properties
 - a page contains only already-seen properties
 - `maxPagesPerSearch` pages have been examined (default 4, maximum 40)
 - the user's maximum run cost is reached
