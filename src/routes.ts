@@ -294,6 +294,8 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
   // requests can repeat the initial client-rendered batch despite an offset.
   const maximumContinuationDeadline = Date.now() + 110_000;
   let continuationDeadline = Date.now() + 65_000;
+  let firstCardsRendered = false;
+  let appendedInThisDocument = false;
   while (true) {
   try {
     await waitForBookingSearchCards(page, Math.min(continuationDeadline, Date.now() + 60_000),
@@ -333,6 +335,15 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     });
     session?.retire();
     throw new Error(`PROPERTY_CARDS_NOT_RENDERED: ${state.destination} offset ${state.offset}`);
+  }
+
+  // Cloud run fuE9qB5KbPjbcY2pd: first cards took 36 s, which left only 31 s
+  // of a handler-start window for the in-page append (it needs up to ~31 s
+  // after hydration). Measure the first continuation window from when cards
+  // actually rendered, still capped by the absolute handler budget.
+  if (!firstCardsRendered) {
+    firstCardsRendered = true;
+    continuationDeadline = Math.min(maximumContinuationDeadline, Math.max(continuationDeadline, Date.now() + 55_000));
   }
 
   await randomDelay(page, 100, 300);
@@ -555,7 +566,9 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     // budget expired before hydration, so the old path fell back to offset
     // URLs, which Booking ignores (same first cards: the 16/25 partial run).
     // Cloud run rQwgL9y0ogItupF7m needed 31 s for the first append; keep margin.
-    const continuationBudget = (state.coverage?.successfulPages ?? 1) <= 1 ? 50_000 : 15_000;
+    // Every newly loaded document hydrates again, so its first append needs
+    // the long window; only appends within the same document are quick.
+    const continuationBudget = !appendedInThisDocument ? 50_000 : 15_000;
     const continuation = await advanceRenderedResults(page, capReached ? 0 : Math.max(0, Math.min(continuationBudget, continuationDeadline - Date.now())), async () => {
       if (!hasSearchContext(page.url(), state) || await inspectBookingPage(page) !== 'normal') return false;
       await readSearchEvidence(); // Unknown evidence stays disclosed; contradictions throw before another action.
@@ -587,6 +600,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       // Real progress earns another bounded batch window, never past the
       // absolute handler budget below requestHandlerTimeoutSecs.
       continuationDeadline = Math.min(maximumContinuationDeadline, Date.now() + 35_000);
+      appendedInThisDocument = true;
       continue;
     }
     log.info('Booking continuation controls absent at bounded discovery cutoff.', await renderedContinuationDiagnostic(page));
