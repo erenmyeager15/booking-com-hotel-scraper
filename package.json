@@ -25,7 +25,7 @@
   },
   "overrides": {
     "brace-expansion": "5.0.12",
-    "follow-redirects": "1.16.1",
+    "follow-redirects": "1.16.2",
     "ip-address": "10.7.4",
     "get-uri": {
       "basic-ftp": "6.2.3"
