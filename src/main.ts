@@ -26,6 +26,9 @@ import { BOOKING_MAX_REQUESTS_PER_CRAWL, bookingBrowserSessions, bookingSessionP
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const DETAILED_RUN_STARTED_EVENT = 'detailed-run-started';
 const PAGE_SIZE = 25;
+const MAX_FRESH_SESSION_RETRIES = 2;
+// One attempt normally takes 30-80 s; do not start another after this point.
+const FRESH_RETRY_DEADLINE_SECS = 150;
 
 const startup = new StartupGuard();
 let sdkReady = false;
@@ -132,7 +135,7 @@ for (let tierIndex = 0; tierIndex < attempts.length; tierIndex++) {
   const { tier, freshSessionRetry } = attempts[tierIndex];
   if (tierIndex > 0) {
     console.warn(freshSessionRetry
-      ? `Booking.com redirected the search away from results using ${tier.label}; retrying once in a fresh browser session.`
+      ? `Booking.com did not serve results in that ${tier.label} session (redirect, challenge or unrendered search); retrying in a fresh browser session.`
       : `No Booking.com properties were collected using ${attempts[tierIndex - 1].tier.label}; retrying with ${tier.label}.`);
     resetNoResultDestinations();
   }
@@ -212,9 +215,17 @@ for (let tierIndex = 0; tierIndex < attempts.length; tierIndex++) {
   // home page and the single in-session restoration lands there again, while
   // a fresh session loads results. Retry only that case, once per tier, and
   // only when nothing was saved; search events were charged once above.
-  const searchRedirectedAway = chargedHotelCount === 0 && !spendingLimitReached && !sourceDeniedAccess
-    && finalStates.some(state => state.coverage?.reason === 'source_context_redirect');
-  if (searchRedirectedAway && !freshSessionRetry) {
+  // Apify's QA runs the default input and requires success within 5 minutes.
+  // Its failures came from single bad sessions: a home-page redirect, an
+  // access challenge or a search that never rendered on one exit IP, while a
+  // new session usually loads. Retry those, up to twice per tier, only when
+  // nothing was saved and enough of the 5-minute budget remains. A fresh
+  // session is ordinary proxy rotation; search events stay charged once.
+  const freshSessionReasons = ['source_context_redirect', 'source_access_blocked', 'source_search_not_rendered', 'search_request_failed'];
+  const sessionLevelFailure = chargedHotelCount === 0 && !spendingLimitReached && !everyDestinationReportedEmpty
+    && finalStates.some(state => freshSessionReasons.includes(state.coverage?.reason ?? ''));
+  const freshRetriesUsed = attempts.slice(0, tierIndex + 1).filter(a => a.tier === tier && a.freshSessionRetry).length;
+  if (sessionLevelFailure && freshRetriesUsed < MAX_FRESH_SESSION_RETRIES && process.uptime() < FRESH_RETRY_DEADLINE_SECS) {
     attempts.splice(tierIndex + 1, 0, { tier, freshSessionRetry: true });
     continue;
   }
