@@ -22,13 +22,13 @@ import { bookingBrowserContext, bookingBrowserPool } from './browser-lifecycle.j
 import { bookingPostNavigation } from './browser-navigation.js';
 import { BOOKING_MAX_REQUESTS_PER_CRAWL, bookingBrowserSessions, bookingSessionPreNavigation,
   withBookingSessionCookies, isBookingSessionFailure } from './browser-session.js';
+import { freshRetryDecision, isTransientNetworkError } from './retry-policy.js';
 
 const SEARCH_STARTED_EVENT = 'booking-search-started';
 const DETAILED_RUN_STARTED_EVENT = 'detailed-run-started';
 const PAGE_SIZE = 25;
-const MAX_FRESH_SESSION_RETRIES = 2;
-// One attempt normally takes 30-80 s; do not start another after this point.
-const FRESH_RETRY_DEADLINE_SECS = 150;
+// Requests in the current attempt that failed only because the proxy connection dropped.
+let networkFailureCount = 0;
 
 const startup = new StartupGuard();
 let sdkReady = false;
@@ -168,6 +168,7 @@ for (let tierIndex = 0; tierIndex < attempts.length; tierIndex++) {
 
   console.info(`Starting ${input.scrapeDetails ? 'detailed' : 'fast'} Booking.com scrape for ${chargedSearches.length} search source(s) using ${tier.label}.`);
   failedRequestCount = 0;
+  networkFailureCount = 0;
   finalStates = [];
 
   const initialRequests: SearchRequest[] = chargedSearches.map((source, sourceIndex) => {
@@ -225,7 +226,15 @@ for (let tierIndex = 0; tierIndex < attempts.length; tierIndex++) {
   const sessionLevelFailure = chargedHotelCount === 0 && !spendingLimitReached && !everyDestinationReportedEmpty
     && finalStates.some(state => freshSessionReasons.includes(state.coverage?.reason ?? ''));
   const freshRetriesUsed = attempts.slice(0, tierIndex + 1).filter(a => a.tier === tier && a.freshSessionRetry).length;
-  if (sessionLevelFailure && freshRetriesUsed < MAX_FRESH_SESSION_RETRIES && process.uptime() < FRESH_RETRY_DEADLINE_SECS) {
+  // A dropped proxy connection never reached Booking.com; wait so a short
+  // outage can pass instead of spending every retry within seconds.
+  const networkOnly = failedRequestCount > 0 && networkFailureCount === failedRequestCount;
+  const retry = freshRetryDecision({ networkOnly, retriesUsed: freshRetriesUsed, uptimeSecs: process.uptime() });
+  if (sessionLevelFailure && retry.retry) {
+    if (retry.delaySecs > 0) {
+      console.warn(`The ${tier.label} connection failed before Booking.com answered; waiting ${retry.delaySecs} s before a fresh session.`);
+      await new Promise(resolve => setTimeout(resolve, retry.delaySecs * 1000));
+    }
     attempts.splice(tierIndex + 1, 0, { tier, freshSessionRetry: true });
     continue;
   }
@@ -364,6 +373,7 @@ function createBrowserCrawler(proxyConfiguration: ProxyConfiguration | undefined
           : request.label === 'detail' ? 'detail_request_failed'
           : state.coverage.reason === 'source_search_not_rendered' ? 'source_search_not_rendered' : 'search_request_failed'; }
       const message = error instanceof Error ? error.message : String(error);
+      if (isTransientNetworkError(message)) networkFailureCount++;
       const diagnostic = { kind: request.label === 'detail' ? 'detail' : 'search',
         timedOut: /timeout|timed out/i.test(message), ...await browserFailureDiagnostic(page) };
       log.warning('Booking browser failure diagnostics (no page contents).', diagnostic);

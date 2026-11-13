@@ -265,7 +265,7 @@ Booking.com varies fields by property, market, dates, device layout, and experim
 
 Booking.com's search page shows its first 15–25 properties and then adds more in the same page as you scroll, with a **Load more results** button after roughly 100. The Actor collects further results the same way: it scrolls to the end of the list in the same browser page and, when present, uses that single button. It does not rely on offset URLs, which Booking currently ignores. A Booking **Next page** link is followed if one is exposed, and a bounded offset request remains only as a last resort; repeated properties are never saved or billed twice.
 
-If Booking redirects a search to its home page before any property is saved, the search is retried once in a fresh browser session on the same proxy type. The search event is charged once.
+If Booking redirects a search to its home page, shows a challenge or doesn't render results before any property is saved, the search is retried in a fresh browser session on the same proxy type, up to twice. If the proxy connection itself drops before Booking answers (for example `ERR_TUNNEL_CONNECTION_FAILED`), the Actor waits 5, 10, 20 and then 30 seconds between up to four fresh sessions, so a short proxy outage can pass. No retry starts after 150 seconds of run time, which keeps the default run inside five minutes. The search event is charged once.
 
 Each loaded batch counts as one page toward `maxPagesPerSearch`. Pagination stops when any of these is true:
 
