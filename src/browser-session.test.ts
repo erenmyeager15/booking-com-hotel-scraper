@@ -14,6 +14,9 @@ import { assertBookingSession, bookingBrowserSessions, bookingSessionPreNavigati
 import { restoreSearchState } from './search-state.js';
 import { router, buildSearchUrl } from './routes.js';
 import type { SearchState, HotelRecord } from './types.js';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 const stateFor = (name: string): SearchState => ({
   destination: 'London, United Kingdom', requestNamespace: name,

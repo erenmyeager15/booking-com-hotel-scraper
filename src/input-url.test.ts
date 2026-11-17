@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { normalizeInput, normalizeSearchUrls, resolveSearchContext } from './input.js';
 import { buildSearchUrl, hasSearchContext } from './routes.js';
 import type { SearchState } from './types.js';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 const today = new Date('2026-10-09T10:00:00Z');
 // Exact public URL rejected before browsing in cloud run ay8Kdkwx3iIXKVj95.

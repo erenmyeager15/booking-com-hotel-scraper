@@ -26,6 +26,9 @@ import {
   searchRequestKey,
 } from './routes.js';
 import type { SearchState } from './types.js';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 test('keeps browser retries distinct across proxy tiers and searches', () => {
   const base = { destination: 'London, United Kingdom', offset: 0 } as SearchState;

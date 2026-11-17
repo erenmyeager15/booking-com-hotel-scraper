@@ -5,6 +5,9 @@ import type { AddressInfo } from 'node:net';
 import { chromium, type Page, type Browser } from 'playwright';
 import { waitForBookingSearchCards, inspectBookingPage } from './routes.js';
 import { attachPageDiagnostics, browserFailureDiagnostic } from './page-diagnostics.js';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 type Scenario = 'late-cards' | 'parsed-empty' | 'never-cards' | 'denied' | 'changed-search';
 async function stream(scenario: Scenario, check: (page: Page, visits: () => number, url: string) => Promise<void>) {

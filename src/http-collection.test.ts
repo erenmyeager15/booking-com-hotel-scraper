@@ -6,6 +6,9 @@ import { load } from 'cheerio';
 import { runHttpFastPath, type SearchRequest } from './http-fast-path.js';
 import { buildSearchUrl } from './routes.js';
 import type { HotelRecord, SearchState } from './types.js';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 let sequence = 0;
 const stateFor = (): SearchState => ({

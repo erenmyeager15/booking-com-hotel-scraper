@@ -1,4 +1,4 @@
-import { collectionTimeExhausted, continuationBudgetMs } from './run-budget.js';
+import { collectionTimeExhausted, continuationBudgetMs, runClock } from './run-budget.js';
 import { createPlaywrightRouter } from 'crawlee';
 import { Actor } from 'apify';
 import type { Page } from 'playwright';
@@ -616,7 +616,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       log.warning(`Short Booking batch stopped safely: ${shortBatch}.`);
       return;
     }
-    if (collectionTimeExhausted({ maxResults: state.maxResults, pageSize: state.pageSize, uptimeSecs: process.uptime(), timeoutAt: process.env.ACTOR_TIMEOUT_AT })) {
+    if (collectionTimeExhausted({ maxResults: state.maxResults, pageSize: state.pageSize, uptimeSecs: runClock.uptimeSecs(), timeoutAt: process.env.ACTOR_TIMEOUT_AT })) {
       state.hasMore = false;
       if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'run_time_budget'; }
       log.warning(`Stopped loading more Booking results to finish within the run-time budget; keeping ${state.collectedCount} saved hotels.`);
@@ -668,7 +668,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     return;
   }
 
-  if (collectionTimeExhausted({ maxResults: state.maxResults, pageSize: state.pageSize, uptimeSecs: process.uptime(), timeoutAt: process.env.ACTOR_TIMEOUT_AT })) {
+  if (collectionTimeExhausted({ maxResults: state.maxResults, pageSize: state.pageSize, uptimeSecs: runClock.uptimeSecs(), timeoutAt: process.env.ACTOR_TIMEOUT_AT })) {
     state.hasMore = false;
     if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'run_time_budget'; }
     log.warning(`Stopped loading more Booking results to finish within the run-time budget; keeping ${state.collectedCount} saved hotels.`);

@@ -14,6 +14,9 @@ import { browserFailureDiagnostic, attachPageDiagnostics } from './page-diagnost
 import { router, buildSearchUrl } from './routes.js';
 import type { HotelRecord, SearchState } from './types.js';
 import { chromium } from 'playwright';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 const searchState = (name: string): SearchState => ({
   destination: 'London, United Kingdom', requestNamespace: name,

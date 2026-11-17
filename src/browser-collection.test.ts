@@ -9,6 +9,9 @@ import { bookingCompletionStatus } from './completion.js';
 import { browserSearchDiagnostic } from './search-evidence.js';
 import { advanceRenderedResults } from './browser-continuation.js';
 import { bookingNavigationOptions, waitForBookingDocument } from './navigation.js';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 test('empty rendered search stops without hotel charges, retries or exposing page contents', async () => {
   const browser = await chromium.launch({ headless: true }), originalPush = Actor.pushData;

@@ -7,6 +7,9 @@ import { normalizeInput, resolveSearchContext } from './input.js';
 import { hasSearchContext, extractPropertyFromSnapshot, buildSearchUrl } from './routes.js';
 import type { HotelRecord, SearchState } from './types.js';
 import { SearchStateRegistry } from './search-state.js';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 const today = new Date('2026-10-07T10:00:00Z');
 const search: SearchState = { destination: 'London', checkIn: '2026-11-07', checkOut: '2026-11-09',

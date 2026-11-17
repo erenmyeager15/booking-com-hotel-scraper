@@ -5,6 +5,9 @@ import { chromium } from 'playwright';
 import { assessSearchEvidence, browserSearchFields, htmlSearchFields, pageCurrencyEvidence } from './search-evidence.js';
 import { buildSearchUrl, hasSearchContext, classifyBookingDocument, inspectBookingPage, router } from './routes.js';
 import type { SearchState } from './types.js';
+import { runClock } from './run-budget.js';
+// Test files can run for minutes; the small-run time budget measures real runs only.
+runClock.uptimeSecs = () => 0;
 
 const state = { destination: 'London, United Kingdom', checkIn: '2026-11-15', checkOut: '2026-11-17',
   adults: 2, rooms: 1, childrenAges: [], currency: 'GBP', propertyTypes: [], stars: [],

@@ -12,6 +12,9 @@ export const SMALL_RUN_COLLECTION_SECS = 180;
 /** Stop starting new pages this close to the run's own timeout. */
 export const TIMEOUT_RESERVE_SECS = 60;
 
+/** Seconds since the run started. Replaceable so long test files are not cut short. */
+export const runClock = { uptimeSecs: (): number => process.uptime() };
+
 export function continuationBudgetMs(appendedInThisDocument: boolean, continuationAbsentBefore: boolean): number {
   if (appendedInThisDocument || continuationAbsentBefore) return LATER_DOCUMENT_CONTINUATION_MS;
   return FIRST_DOCUMENT_CONTINUATION_MS;
