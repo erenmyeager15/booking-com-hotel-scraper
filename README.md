@@ -267,6 +267,8 @@ Booking.com's search page shows its first 15–25 properties and then adds more 
 
 If Booking redirects a search to its home page, shows a challenge or doesn't render results before any property is saved, the search is retried in a fresh browser session on the same proxy type, up to twice. If the proxy connection itself drops before Booking answers (for example `ERR_TUNNEL_CONNECTION_FAILED`), the Actor waits 5, 10, 20 and then 30 seconds between up to four fresh sessions, so a short proxy outage can pass. No retry starts after 150 seconds of run time, which keeps the default run inside five minutes. The search event is charged once.
 
+Runs of up to 25 hotels stop loading further batches after three minutes and finish successfully with the hotels already saved, and any run stops starting new pages one minute before its timeout. Once a search has shown no **Load more** control, later batches of that search wait 15 seconds for it instead of 50.
+
 Each loaded batch counts as one page toward `maxPagesPerSearch`. Pagination stops when any of these is true:
 
 - `maxResults` is reached

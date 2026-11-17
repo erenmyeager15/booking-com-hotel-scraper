@@ -187,6 +187,8 @@ export interface SearchState {
   pageSize: number;
   hasMore: boolean;
   maxPages?: number;
+  /** A document of this search already showed no continuation control. */
+  continuationAbsentBefore?: boolean;
   coverage?: { status: 'pending' | 'complete' | 'empty' | 'limited' | 'failed'; successfulPages: number; reason: string | null };
 }
 

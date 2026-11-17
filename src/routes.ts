@@ -1,3 +1,4 @@
+import { collectionTimeExhausted, continuationBudgetMs } from './run-budget.js';
 import { createPlaywrightRouter } from 'crawlee';
 import { Actor } from 'apify';
 import type { Page } from 'playwright';
@@ -568,7 +569,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     // Cloud run rQwgL9y0ogItupF7m needed 31 s for the first append; keep margin.
     // Every newly loaded document hydrates again, so its first append needs
     // the long window; only appends within the same document are quick.
-    const continuationBudget = !appendedInThisDocument ? 50_000 : 15_000;
+    const continuationBudget = continuationBudgetMs(appendedInThisDocument, state.continuationAbsentBefore === true);
     const continuation = await advanceRenderedResults(page, capReached ? 0 : Math.max(0, Math.min(continuationBudget, continuationDeadline - Date.now())), async () => {
       if (!hasSearchContext(page.url(), state) || await inspectBookingPage(page) !== 'normal') return false;
       await readSearchEvidence(); // Unknown evidence stays disclosed; contradictions throw before another action.
@@ -604,6 +605,7 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       continue;
     }
     log.info('Booking continuation controls absent at bounded discovery cutoff.', await renderedContinuationDiagnostic(page));
+    state.continuationAbsentBefore = true;
   }
   const reportedTotal = reportedPropertyCount(await page.locator('h1').allTextContents().then(text => text.join(' ')));
   const shortBatch = !nextPageUrl ? shortBatchContinuation(state, cardCount, newOnPage, duplicateOnPage, extractedOnPage, reportedTotal) : null;
@@ -612,6 +614,12 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
       state.hasMore = false;
       if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = shortBatch; }
       log.warning(`Short Booking batch stopped safely: ${shortBatch}.`);
+      return;
+    }
+    if (collectionTimeExhausted({ maxResults: state.maxResults, pageSize: state.pageSize, uptimeSecs: process.uptime(), timeoutAt: process.env.ACTOR_TIMEOUT_AT })) {
+      state.hasMore = false;
+      if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'run_time_budget'; }
+      log.warning(`Stopped loading more Booking results to finish within the run-time budget; keeping ${state.collectedCount} saved hotels.`);
       return;
     }
     // Advance by actual source cards, not the requested batch size: 15→25
@@ -660,6 +668,12 @@ router.addDefaultHandler(async ({ page, request, crawler, session, log }) => {
     return;
   }
 
+  if (collectionTimeExhausted({ maxResults: state.maxResults, pageSize: state.pageSize, uptimeSecs: process.uptime(), timeoutAt: process.env.ACTOR_TIMEOUT_AT })) {
+    state.hasMore = false;
+    if (state.coverage) { state.coverage.status = 'limited'; state.coverage.reason = 'run_time_budget'; }
+    log.warning(`Stopped loading more Booking results to finish within the run-time budget; keeping ${state.collectedCount} saved hotels.`);
+    return;
+  }
   state.offset += state.pageSize;
   const nextUrl = nextPageUrl ?? buildSearchUrl(state, page.url());
 
